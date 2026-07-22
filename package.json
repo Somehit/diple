@@ -36,7 +36,6 @@
 		"vite": "^8.0.16"
 	},
 	"dependencies": {
-		"better-sqlite3": "^13.0.1",
-		"marked": "^18.0.7"
+		"better-sqlite3": "^13.0.1"
 	}
 }

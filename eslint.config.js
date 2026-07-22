@@ -36,9 +36,6 @@ export default defineConfig(
 	{
 		// Override or add rule settings here, such as:
 		// 'svelte/button-has-type': 'error'
-		rules: {
-			// Single-user local app — rendering user's own markdown is safe
-			'svelte/no-at-html-tags': 'off'
-		}
+		rules: {}
 	}
 );
