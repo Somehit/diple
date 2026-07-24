@@ -1,1 +1,28 @@
 @import 'tailwindcss';
+@import '@fontsource/inter/400.css';
+@import '@fontsource/inter/700.css';
+
+@theme {
+	--font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+
+	/* Palette */
+	--color-fond: #faf9f6;
+	--color-encre: #1e1b16;
+	--color-accent: #e0862a;
+	--color-surface: color-mix(in srgb, var(--color-encre) 5%, var(--color-fond));
+	--color-erreur: #c33c2b;
+}
+
+@layer base {
+	body {
+		font-size: 1.125rem;
+		background: var(--color-fond);
+		color: var(--color-encre);
+		caret-color: var(--color-accent);
+		color-scheme: light;
+	}
+
+	::selection {
+		background: color-mix(in srgb, var(--color-accent) 30%, transparent);
+	}
+}
