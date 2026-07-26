@@ -5,7 +5,10 @@ declare global {
 		// interface Error {}
 		// interface Locals {}
 		// interface PageData {}
-		// interface PageState {}
+		/** Shallow-routing state. `zoom` tracks the current zoom level (block id or null for root). */
+		interface PageState {
+			zoom?: string | null;
+		}
 		// interface Platform {}
 	}
 }

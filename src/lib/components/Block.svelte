@@ -2,7 +2,6 @@
 	import type { Block } from '$lib/server/db/queries';
 	import { renderMarkdown } from '$lib/utils/markdown';
 	import BlockRecursive from './Block.svelte';
-	import BlockMenu from './BlockMenu.svelte';
 
 	let {
 		block,
@@ -11,15 +10,17 @@
 		registerEl,
 		onSaveContent,
 		autoEditRequest = null,
-		onToggleCollapse
+		onToggleCollapse,
+		onZoom
 	}: {
 		block: Block;
 		childrenMap: Map<string | null, Block[]>;
 		depth: number;
 		registerEl: (id: string, el: HTMLDivElement) => void;
-		onSaveContent: (id: string, content: string) => void;
+		onSaveContent: (id: string, before: string, after: string, caret?: number) => void;
 		autoEditRequest?: { id: string; caret: number } | null;
 		onToggleCollapse?: (id: string) => void;
+		onZoom?: (id: string) => void;
 	} = $props();
 
 	const children = $derived(childrenMap.get(block.id) ?? []);
@@ -95,9 +96,14 @@
 
 	function stopEditing() {
 		if (editEl) {
-			const content = editEl.textContent ?? '';
-			block.content = content;
-			onSaveContent(block.id, content);
+			const newContent = editEl.textContent ?? '';
+			block.content = newContent;
+			// Only report if content actually changed (avoids no-op undo entries)
+			if (newContent !== capturedContent) {
+				const sel = window.getSelection();
+				const caretOffset = sel?.focusOffset ?? newContent.length;
+				onSaveContent(block.id, capturedContent, newContent, caretOffset);
+			}
 		}
 		editing = false;
 	}
@@ -118,9 +124,27 @@
 >
 	<div class="block-row" data-h={editing ? 0 : headingLevel}>
 		<div class="block-gutter">
-			<span class="gutter-controls">
-				<BlockMenu {block} {onSaveContent} />
-			</span>
+			{#if onZoom}
+				{#if editing || block.content.trim() === ''}
+					<!-- No zoom into empty blocks (or while editing) — spacer keeps bullet alignment -->
+					<span class="zoom-spacer" aria-hidden="true"></span>
+				{:else}
+					<button class="zoom-btn" aria-label="Zoom into block" onclick={() => onZoom(block.id)}>
+						<svg
+							width="14"
+							height="14"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2.2"
+							stroke-linecap="round"
+						>
+							<circle cx="10.5" cy="10.5" r="7" />
+							<line x1="15" y1="15" x2="21" y2="21" />
+						</svg>
+					</button>
+				{/if}
+			{/if}
 			{#if children.length > 0}
 				<button
 					class="bullet bullet--toggle"
@@ -176,6 +200,7 @@
 					{registerEl}
 					{onSaveContent}
 					{onToggleCollapse}
+					{onZoom}
 					{autoEditRequest}
 				/>
 			{/each}
@@ -187,7 +212,7 @@
 	.block {
 		padding-top: 6px;
 		padding-bottom: 6px;
-		--gutter-w: 1.5rem;
+		--zoom-w: 1.35rem;
 		--bullet-w: 1.5rem;
 	}
 	.block-row {
@@ -247,18 +272,6 @@
 		   If .block-content padding changes, update the + 4px here. */
 		height: calc(var(--row-h) + 4px);
 	}
-	.gutter-controls {
-		opacity: 0;
-		display: flex;
-		align-items: center;
-		justify-content: flex-end;
-		width: var(--gutter-w);
-		flex-shrink: 0;
-		overflow: visible;
-	}
-	.block-row:hover .gutter-controls {
-		opacity: 1;
-	}
 	.block-content-wrap {
 		flex: 1;
 		min-width: 0;
@@ -272,10 +285,40 @@
 		position: absolute;
 		top: 0;
 		bottom: 0;
-		left: calc(var(--gutter-w) + var(--bullet-w) / 2);
+		/* Center of the diple, accounting for the zoom button to its left. */
+		left: calc(var(--zoom-w) + var(--bullet-w) / 2);
 		width: 1px;
 		background: color-mix(in srgb, var(--color-encre) 8%, transparent);
 		pointer-events: none;
+	}
+	.zoom-btn,
+	.zoom-spacer {
+		flex-shrink: 0;
+		width: var(--zoom-w);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+	.zoom-btn {
+		border: none;
+		background: none;
+		padding: 0;
+		font: inherit;
+		cursor: pointer;
+		color: color-mix(in srgb, var(--color-encre) 30%, transparent);
+		/* Hidden until row hover — no layout shift because .zoom-spacer keeps the width. */
+		opacity: 0;
+		transition: opacity 0.15s ease;
+	}
+	.zoom-btn:hover {
+		color: var(--color-accent);
+	}
+	.block-row:hover .zoom-btn {
+		opacity: 1;
+	}
+	/* Prevent the hover reveal from triggering while drag-selecting (cursor over blocks). */
+	:global(.editor--selecting) .zoom-btn {
+		opacity: 0;
 	}
 	.block-content {
 		outline: none;

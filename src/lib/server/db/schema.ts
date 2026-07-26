@@ -10,6 +10,14 @@ CREATE TABLE IF NOT EXISTS blocks (
 
 CREATE INDEX IF NOT EXISTS idx_blocks_parent
 	ON blocks(parent_id);
+
+-- Full-text index over block content. Plain FTS5 table (not external-content):
+-- the app maintains it inside the same transactions as block writes, so the two
+-- never drift apart — see queries.ts.
+CREATE VIRTUAL TABLE IF NOT EXISTS blocks_fts USING fts5(
+	id UNINDEXED,
+	content
+);
 `;
 
 const SEED_BLOCKS = [
@@ -35,6 +43,21 @@ export function initDb(): void {
 	const columns = db.prepare('PRAGMA table_info(blocks)').all() as { name: string }[];
 	if (!columns.some((c) => c.name === 'collapsed')) {
 		db.exec('ALTER TABLE blocks ADD COLUMN collapsed INTEGER NOT NULL DEFAULT 0');
+	}
+
+	// Migration: add created_at (epoch ms) if missing. Existing rows keep 0 =
+	// "unknown creation time" — they intentionally don't match the :today filter.
+	if (!columns.some((c) => c.name === 'created_at')) {
+		db.exec('ALTER TABLE blocks ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0');
+	}
+
+	// Backfill the FTS index for databases that predate it (fresh DBs seed both
+	// tables below, so this is a no-op for them).
+	const ftsCount = db.prepare('SELECT COUNT(*) AS cnt FROM blocks_fts').get() as {
+		cnt: number;
+	};
+	if (ftsCount.cnt === 0) {
+		db.exec('INSERT INTO blocks_fts (id, content) SELECT id, content FROM blocks');
 	}
 
 	const row = db.prepare('SELECT COUNT(*) AS cnt FROM blocks').get() as {
