@@ -99,6 +99,9 @@
 		return path;
 	});
 
+	/** True once the user has clicked the top capture zone this session. Resets on reload. */
+	let captureZoneUsed = $state(false);
+
 	const blockEls = new Map<string, HTMLDivElement>();
 	let autoEditRequest = $state<{ id: string; caret: number } | null>(null);
 
@@ -342,6 +345,8 @@
 	 * position 0 (newest on top — the "stream" flow), focuses it for typing.
 	 */
 	async function handleCreateRootBlock() {
+		captureZoneUsed = true;
+
 		const siblings = getSiblings(null);
 		for (const sib of siblings) {
 			sib.position += 1;
@@ -540,6 +545,39 @@
 			return;
 		}
 
+		// Cursor at position 0: nothing to split — insert an empty sibling above
+		// at the same level. (Without this, Enter at the start of a block with
+		// visible children would push the entire block down as a child.)
+		if (cursorPos === 0) {
+			const parentId = block.parent_id;
+			const newPos = block.position; // take this block's slot; it and later siblings shift
+			const newBlock: Block = {
+				id: crypto.randomUUID(),
+				parent_id: parentId,
+				content: '',
+				position: newPos,
+				collapsed: 0,
+				created_at: Date.now()
+			};
+
+			insertBlockLocal(newBlock);
+			autoEditRequest = { id: newBlock.id, caret: 0 };
+
+			inflight++;
+			try {
+				await apiCreate(parentId, '', newPos, newBlock.id);
+				autoEditRequest = null;
+				recordEntry(
+					[{ kind: 'create', block: { ...newBlock } }],
+					{ id: block.id, offset: 0 },
+					{ id: newBlock.id, offset: 0 }
+				);
+			} finally {
+				inflight--;
+			}
+			return;
+		}
+
 		const before = text.slice(0, cursorPos);
 		const after = text.slice(cursorPos);
 
@@ -724,12 +762,12 @@
 			return;
 		}
 
-		// At root level: delete only if the block is empty
+		// At root level: delete the block if it's empty. If there's a previous
+		// visible block, move the caret there; otherwise just drop the caret.
 		if (text.length === 0) {
 			const idx = flatIndex.get(block.id);
-			if (idx === undefined || idx <= 0) return;
-			const prevBlock = flatBlocks[idx - 1];
-			if (!prevBlock) return;
+			if (idx === undefined) return;
+			const prevBlock = idx > 0 ? flatBlocks[idx - 1] : null;
 
 			const siblings = getSiblings(block.parent_id);
 			const blockIdx = siblings.findIndex((b) => b.id === block.id);
@@ -739,10 +777,15 @@
 
 			blocks = blocks.filter((b) => b.id !== block.id);
 
-			// Focus the previous block via autoEdit instead of broken focusEnd
-			autoEditRequest = { id: prevBlock.id, caret: prevBlock.content.length };
-			await tick();
-			autoEditRequest = null;
+			if (prevBlock) {
+				autoEditRequest = { id: prevBlock.id, caret: prevBlock.content.length };
+				await tick();
+				autoEditRequest = null;
+			} else {
+				// First visible block: nowhere to go — just drop the caret.
+				(document.activeElement as HTMLElement | null)?.blur();
+			}
+
 			await apiDelete(block.id);
 
 			recordEntry(
@@ -760,10 +803,28 @@
 					}
 				],
 				{ id: block.id, offset: 0 },
-				{ id: prevBlock.id, offset: prevBlock.content.length }
+				prevBlock
+					? { id: prevBlock.id, offset: prevBlock.content.length }
+					: { id: block.id, offset: 0 }
 			);
+		} else {
+			// Root block with content, cursor at 0: if the previous visible
+			// block is empty and childless, delete it (the "absorb" pass).
+			const idx = flatIndex.get(block.id);
+			if (idx !== undefined && idx > 0) {
+				const prev = flatBlocks[idx - 1];
+				const prevKids = childrenMap.get(prev.id) ?? [];
+				if (prev.content.trim() === '' && prevKids.length === 0) {
+					removeBlockLocal(prev);
+					await apiDelete(prev.id);
+					recordEntry(
+						[{ kind: 'delete', block: { ...prev } }],
+						{ id: block.id, offset: 0 },
+						{ id: block.id, offset: 0 }
+					);
+				}
+			}
 		}
-		// Root block with content: nothing to do
 	}
 
 	async function handleArrowUp(e: KeyboardEvent, block: Block) {
@@ -1157,7 +1218,7 @@
 					onCreateFirstChild={handleCreateFirstChild}
 				/>
 			{/if}
-			{#if !effectiveZoomId}
+			{#if !effectiveZoomId && !captureZoneUsed}
 				<!-- Persistent capture zone at the top of root: click → new first block, cursor in it -->
 				<button class="capture-zone" onclick={handleCreateRootBlock}> What's on your mind? </button>
 			{/if}

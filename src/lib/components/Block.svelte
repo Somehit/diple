@@ -2,6 +2,7 @@
 	import type { Block } from '$lib/server/db/queries';
 	import { renderMarkdown } from '$lib/utils/markdown';
 	import BlockRecursive from './Block.svelte';
+	import BlockMenu from './BlockMenu.svelte';
 
 	let {
 		block,
@@ -145,6 +146,12 @@
 					</button>
 				{/if}
 			{/if}
+			{#if editing}
+				<!-- Formatting mid-edit would fight the capturedContent flow — spacer keeps alignment -->
+				<span class="menu-spacer" aria-hidden="true"></span>
+			{:else}
+				<BlockMenu {block} {onSaveContent} />
+			{/if}
 			{#if children.length > 0}
 				<button
 					class="bullet bullet--toggle"
@@ -188,6 +195,10 @@
 				onblur={stopEditing}
 			></div>
 		</div>
+
+		{#if block.collapsed === 1 && children.length > 0}
+			<span class="child-count" aria-hidden="true">› {children.length}</span>
+		{/if}
 	</div>
 
 	{#if children.length > 0 && block.collapsed === 0}
@@ -213,6 +224,7 @@
 		padding-top: 6px;
 		padding-bottom: 6px;
 		--zoom-w: 1.35rem;
+		--menu-w: 1.35rem;
 		--bullet-w: 1.5rem;
 	}
 	.block-row {
@@ -253,6 +265,15 @@
 	.diple.expanded {
 		transform: rotate(45deg);
 	}
+	/* Collapsed indicator: › N after the content, zero alignment impact */
+	.child-count {
+		flex-shrink: 0;
+		align-self: center;
+		margin-left: 0.35rem;
+		color: color-mix(in srgb, var(--color-encre) 40%, transparent);
+		font-size: 0.8em;
+		user-select: none;
+	}
 	/* Gutter height per heading level so the diple centres on the first text line.
 	   Values = .md-hN font-size × line-height 1.5 — keep in sync with .md-h1/2/3 below. */
 	.block-row[data-h='1'] {
@@ -285,8 +306,8 @@
 		position: absolute;
 		top: 0;
 		bottom: 0;
-		/* Center of the diple, accounting for the zoom button to its left. */
-		left: calc(var(--zoom-w) + var(--bullet-w) / 2);
+		/* Center of the diple, accounting for the zoom and menu buttons to its left. */
+		left: calc(var(--zoom-w) + var(--menu-w) + var(--bullet-w) / 2);
 		width: 1px;
 		background: color-mix(in srgb, var(--color-encre) 8%, transparent);
 		pointer-events: none;
@@ -298,6 +319,10 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
+	}
+	.menu-spacer {
+		flex-shrink: 0;
+		width: var(--menu-w);
 	}
 	.zoom-btn {
 		border: none;
