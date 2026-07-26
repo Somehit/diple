@@ -3,43 +3,65 @@
 	import Navbar from '$lib/components/Navbar.svelte';
 	import SearchPill from '$lib/components/SearchPill.svelte';
 	import PillTrigger from '$lib/components/PillTrigger.svelte';
-	import type { Block } from '$lib/server/db/queries';
 	import { currentZoomId } from '$lib/zoom';
+	import { send } from '$lib/hero-transition';
+	import type { Block } from '$lib/server/db/queries';
 
 	let { data }: { data: { blocks: Block[] } } = $props();
 
 	let editor: Editor | undefined = $state();
-	let pillEl: HTMLElement | undefined = $state();
-	/** Whether the zoom is active — used to relax main's min-height. */
 	const zoomed = $derived(currentZoomId() !== null);
-	/** Hero pill scrolled up to the top bar's level → search lives there. */
-	let docked = $state(false);
+
+	/**
+	 * One-way flag — hero dismisses on the first real interaction (capture
+	 * zone, block click, scroll past the pill, zoom navigation) and never
+	 * returns until the next full page refresh.
+	 */
+	let heroDismissed = $state(false);
+
 	/** Drives the staggered block entrance (editor--intro class). */
 	let intro = $state(false);
-	/**
-	 * Plain (non-reactive) flag: the effect below must not read `intro`,
-	 * or writing it would retrigger the effect and kill the animation.
-	 * Guarantees the entrance plays exactly once — blocks created later
-	 * (Enter) never animate.
-	 */
 	let introPlayed = false;
 
-	// Dock when the hero pill's top edge nears the top bar's pill position:
-	// 14px = navbar padding-top (exact coincidence), + 58px of anticipation so
-	// the docked bar is already there when the hero pill arrives. Reversible.
+	// El refs — pillEl for the IntersectionObserver, heroEl to measure height
+	// at dismiss time for scroll compensation.
+	let pillEl: HTMLElement | undefined = $state();
+	let heroEl: HTMLElement | undefined = $state();
+
+	/** Captured once at dismiss — used by the outroend handler to compensate
+	 *  the scroll shift when the hero section is removed from the document.
+	 *  Plain let (not $state); read by an event handler, not a reactive graph. */
+	let heroHeightAtDismiss = 0;
+
+	// Navigating to a zoomed block (palette result, deep link, block click)
+	// is a clear work intent — dismiss the hero permanently.
 	$effect(() => {
-		if (!pillEl) return;
-		const observer = new IntersectionObserver(([entry]) => (docked = !entry.isIntersecting), {
-			rootMargin: '-72px 0px 0px 0px'
-		});
+		if (zoomed) handleDismiss();
+	});
+
+	/**
+	 * Scroll-triggered dismiss.  Same logic as the old dock observer: when the
+	 * hero pill scrolls up and its top edge crosses the -72px margin (navbar
+	 * padding-top + anticipation), the user is scrolling into content and the
+	 * hero should transition to the top bar.  One-way — once fired, disconnect.
+	 */
+	$effect(() => {
+		if (heroDismissed || zoomed || !pillEl) return;
+		const observer = new IntersectionObserver(
+			([entry]) => {
+				if (!entry.isIntersecting) handleDismiss();
+			},
+			{ rootMargin: '-72px 0px 0px 0px' }
+		);
 		observer.observe(pillEl);
 		return () => observer.disconnect();
 	});
 
-	// One-shot intro: the longest cascade is ~1.2s (capped delay 720ms + 450ms
-	// duration), so the class comes off at 1.5s and later blocks mount silently.
-	$effect(() => {
-		if (docked && !introPlayed) {
+	function handleDismiss() {
+		if (heroDismissed) return;
+		heroHeightAtDismiss = heroEl?.offsetHeight ?? 0;
+		heroDismissed = true;
+		if (!introPlayed && window.scrollY < 10) {
 			introPlayed = true;
 			intro = true;
 			const timer = setTimeout(() => (intro = false), 1500);
@@ -48,54 +70,82 @@
 				intro = false;
 			};
 		}
-	});
+	}
+
+	/**
+	 * When the hero pill's outro (out:send) completes and the hero section is
+	 * about to be removed, compensate the document-height loss so the user's
+	 * reading position doesn't jump.  The `scrollY < 10` version (click dismiss
+	 * at top of page) clamps harmlessly to zero — one path for all dismissals.
+	 *
+	 * Guard with `!zoomed` so the Editor's own scroll management takes over
+	 * during zoom navigation.
+	 */
+	function onPillOutroEnd() {
+		requestAnimationFrame(() => {
+			if (!zoomed && heroHeightAtDismiss > 0) {
+				window.scrollBy(0, -heroHeightAtDismiss);
+			}
+		});
+	}
 </script>
 
-{#if docked || zoomed}
+{#if heroDismissed || zoomed}
 	<Navbar />
 {/if}
 
-{#if !zoomed}
-	<section class="hero">
-		<div class="hero-pill" class:hero-pill--hidden={docked} bind:this={pillEl}>
+{#if !heroDismissed && !zoomed}
+	<section class="hero" bind:this={heroEl}>
+		<h1 class="wordmark">Diple</h1>
+		<div
+			class="hero-pill"
+			bind:this={pillEl}
+			out:send={{ key: 'pill' }}
+			onoutroend={onPillOutroEnd}
+		>
 			<SearchPill>
 				<PillTrigger />
 			</SearchPill>
 		</div>
-		<h1 class="wordmark">Diple</h1>
-		<p class="scroll-hint">Scroll down to go home ↓</p>
 	</section>
 {/if}
 
-<main class:main--zoomed={zoomed}>
-	<Editor bind:this={editor} blocks={data.blocks} {intro} />
+<main class:main--with-navbar={heroDismissed || zoomed}>
+	<Editor bind:this={editor} blocks={data.blocks} {intro} onWorkIntent={handleDismiss} />
 </main>
 
 <style>
+	/*
+	 * Hero occupies the top half of the viewport.  The pill sits at the exact
+	 * centre (50svh line) — not approximately, not "upper-mid".  The wordmark
+	 * is anchored above the pill with the same formula the old 100svh hero used.
+	 *
+	 * Because the hero is only 50svh, <main> starts at the viewport middle:
+	 * "What's on your mind?" and the tree are immediately visible below the pill.
+	 */
 	.hero {
 		position: relative;
-		height: 100svh;
-		display: flex;
-		align-items: center;
-		justify-content: center;
+		height: 50svh;
 	}
 	/*
-	 * The pill — not the wordmark/pill/hint cluster — sits at the exact
-	 * viewport center. Wordmark and hint are anchored to it absolutely.
-	 * Net effect: hero pill and palette pill occupy the same screen position.
+	 * Pill straddles the bottom edge of the hero (the 50% horizontal line).
+	 * translate(-50%, -50%) centres it perfectly at viewport Y = 50svh.
 	 */
 	.hero-pill {
-		transition: opacity 0.15s ease;
+		position: absolute;
+		top: 100%;
+		left: 50%;
+		transform: translate(-50%, -50%);
 	}
-	.hero-pill--hidden {
-		opacity: 0;
-		pointer-events: none;
-	}
+	/*
+	 * Wordmark anchored above the pill: same math as the original 100svh hero
+	 * (30px = half pill height, 2rem = visual gap).  No flex, no flow — the
+	 * pill is the anchor and the wordmark orbits it.
+	 */
 	.wordmark {
 		position: absolute;
-		top: 50%;
+		top: 100%;
 		left: 50%;
-		/* -100% = own height; 30px = half the pill height; 2rem = gap */
 		transform: translate(-50%, calc(-100% - 30px - 2rem));
 		margin: 0;
 		font-family: var(--font-serif, Georgia, serif);
@@ -104,24 +154,9 @@
 		letter-spacing: -0.02em;
 		white-space: nowrap;
 	}
-	.scroll-hint {
-		position: absolute;
-		top: 50%;
-		left: 50%;
-		transform: translate(-50%, calc(30px + 2rem));
-		margin: 0;
-		font-size: 0.9rem;
-		color: color-mix(in srgb, var(--color-encre) 40%, transparent);
-		white-space: nowrap;
-	}
-	/* Guarantee scrollability so the dock observer fires even with a tiny tree */
-	main {
-		min-height: 100vh;
-	}
-	/* When zoomed, main hugs its content — no forced void below a short zoom view.
-	   Top clearance so the zoom header sits below the fixed navbar pill (no hero to push it). */
-	.main--zoomed {
-		min-height: auto;
+	/* When the navbar is visible (fixed at top), main needs clearance so
+	   content doesn't hide behind it */
+	.main--with-navbar {
 		padding-top: 4.5rem;
 	}
 </style>

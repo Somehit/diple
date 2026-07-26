@@ -295,7 +295,7 @@
 		top: calc(100% + 8px);
 		left: 50%;
 		transform: translateX(-50%);
-		width: min(720px, calc(100vw - 2rem));
+		width: min(var(--content-w), calc(100vw - 2rem));
 		max-height: 40vh;
 		overflow-y: auto;
 		border-radius: 14px;

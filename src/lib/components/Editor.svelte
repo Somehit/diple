@@ -26,7 +26,7 @@
 		restoreScroll
 	} from '$lib/zoom';
 
-	let props: { blocks: Block[]; intro?: boolean } = $props();
+	let props: { blocks: Block[]; intro?: boolean; onWorkIntent?: () => void } = $props();
 	let blocks = $state(props.blocks);
 
 	// --- Zoom state (page.state.zoom is reactive on pushState; page.url.searchParams is the fallback for SSR/refresh) ---
@@ -345,6 +345,7 @@
 	 * position 0 (newest on top — the "stream" flow), focuses it for typing.
 	 */
 	async function handleCreateRootBlock() {
+		props.onWorkIntent?.();
 		captureZoneUsed = true;
 
 		const siblings = getSiblings(null);
@@ -376,6 +377,20 @@
 		} finally {
 			inflight--;
 		}
+	}
+
+	/**
+	 * Any click inside the editor (capture zone, block, empty space) signals
+	 * work intent — the hero should be dismissed.
+	 *
+	 * We use `onclick`, not `onfocusin`: mousedown gives the browser focus to
+	 * the clicked element, which would fire focusin and trigger the dismiss
+	 * *before* the click event.  The hero unmount shifts the layout mid-click,
+	 * causing the click to land on a different element — the capture zone's
+	 * own handler never runs.
+	 */
+	function handleClickIntent() {
+		props.onWorkIntent?.();
 	}
 
 	// --- Undo infrastructure ---
@@ -545,10 +560,12 @@
 			return;
 		}
 
-		// Cursor at position 0: nothing to split — insert an empty sibling above
-		// at the same level. (Without this, Enter at the start of a block with
-		// visible children would push the entire block down as a child.)
-		if (cursorPos === 0) {
+		// Cursor at position 0 on a non-empty block: nothing to split — insert an
+		// empty sibling above at the same level. (Without this, Enter at the start
+		// of a block with visible children would push the entire block down as a
+		// child.) Empty blocks fall through to the standard split: new sibling
+		// below, caret moves into it.
+		if (cursorPos === 0 && text.length > 0) {
 			const parentId = block.parent_id;
 			const newPos = block.position; // take this block's slot; it and later siblings shift
 			const newBlock: Block = {
@@ -765,6 +782,11 @@
 		// At root level: delete the block if it's empty. If there's a previous
 		// visible block, move the caret there; otherwise just drop the caret.
 		if (text.length === 0) {
+			// Never cascade-delete a subtree via backspace: a block with children
+			// is undeletable here (server cascades, undo can't restore descendants).
+			const kids = childrenMap.get(block.id) ?? [];
+			if (kids.length > 0) return;
+
 			const idx = flatIndex.get(block.id);
 			if (idx === undefined) return;
 			const prevBlock = idx > 0 ? flatBlocks[idx - 1] : null;
@@ -1200,6 +1222,7 @@
 	class:editor--selecting={dragActive}
 	class:editor--intro={props.intro ?? false}
 	bind:this={editorEl}
+	onclick={handleClickIntent}
 	onkeydown={handleEditorKeydown}
 	onmousedown={onEditorMousedown}
 	oncontextmenu={onEditorContextMenu}
@@ -1220,7 +1243,10 @@
 			{/if}
 			{#if !effectiveZoomId && !captureZoneUsed}
 				<!-- Persistent capture zone at the top of root: click → new first block, cursor in it -->
-				<button class="capture-zone" onclick={handleCreateRootBlock}> What's on your mind? </button>
+				<button class="capture-zone" onclick={handleCreateRootBlock}>
+					<span>Write anything…</span>
+					<span>Press Enter for another block</span>
+				</button>
 			{/if}
 			{#each rootBlocks as block, i (block.id)}
 				{#if zoomedBlock && effectiveZoomId}
@@ -1252,7 +1278,8 @@
 
 			{#if rootBlocks.length === 0 && effectiveZoomId}
 				<button class="capture-zone" onclick={handleCreateFirstChild}>
-					What's on your mind?
+					<span>Write anything…</span>
+					<span>Press Enter for another block</span>
 				</button>
 			{/if}
 		</div>
@@ -1277,17 +1304,17 @@
 
 <style>
 	.editor {
-		max-width: 840px;
+		width: min(var(--content-w), calc(100vw - 2rem));
 		margin: 2rem auto;
-		padding: 0 1rem;
+		padding: 0;
 		position: relative;
 	}
 	/* Single continuous band behind the selected blocks.
 	   First child of .editor → blocks paint above it, no z-index needed. */
 	.selection-overlay {
 		position: absolute;
-		left: 1rem;
-		right: 1rem;
+		left: 0;
+		right: 0;
 		background: color-mix(in srgb, var(--color-accent) 15%, var(--color-fond));
 		pointer-events: none;
 	}
@@ -1296,22 +1323,25 @@
 	.editor.editor--selecting * {
 		user-select: none !important;
 	}
-	/* Capture zone: a tall ghost row sitting where the next block will be born.
-	   Used at root (top of the list) and in empty zoomed views. Left padding
-	   aligns the text with block content (gutter = zoom-w 1.35rem + bullet-w 1.5rem).
-	   Hover stays in the encre palette — discreet, like the breadcrumb crumbs. */
+	/* Capture zone: a tall ghost block sitting where the next input will appear.
+	   Used at root (top of the list) and in empty zoomed views.
+	   Two-line hint, column-flex, generous hit target. */
 	.capture-zone {
 		display: flex;
-		align-items: center;
+		flex-direction: column;
+		justify-content: center;
+		gap: 0.25rem;
 		width: 100%;
-		min-height: 3.25rem;
+		margin-top: 3rem;
+		margin-bottom: 1.25rem;
+		min-height: 5rem;
 		border: none;
 		background: none;
 		font: inherit;
 		font-style: italic;
 		text-align: left;
 		cursor: text;
-		padding: 2px 4px 2px 2.85rem;
+		padding: 0.75rem 4px 0.75rem 0.75rem;
 		color: color-mix(in srgb, var(--color-encre) 38%, transparent);
 		border-radius: 8px;
 		transition:

@@ -18,7 +18,7 @@
 		display: flex;
 		align-items: center;
 		gap: 0.625rem;
-		width: min(720px, calc(100vw - 2rem));
+		width: min(var(--content-w), calc(100vw - 2rem));
 		height: 60px;
 		padding: 0 1.125rem;
 		border-radius: 14px;

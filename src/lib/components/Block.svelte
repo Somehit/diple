@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Block } from '$lib/server/db/queries';
 	import { renderMarkdown } from '$lib/utils/markdown';
+	import { caretFromClick } from '$lib/utils/caret';
 	import BlockRecursive from './Block.svelte';
 	import BlockMenu from './BlockMenu.svelte';
 
@@ -38,6 +39,7 @@
 
 	let editing = $state(false);
 	let editEl: HTMLDivElement | undefined = $state();
+	let viewEl: HTMLSpanElement | undefined = $state();
 	// Content captured once when entering edit mode — NOT reactive to block.content
 	let capturedContent = '';
 	let pendingCaret: number | null = null;
@@ -90,8 +92,9 @@
 		}
 	});
 
-	function startEditing() {
+	function startEditing(e?: MouseEvent) {
 		capturedContent = block.content;
+		pendingCaret = caretFromClick(e, viewEl, block.content.length);
 		editing = true;
 	}
 
@@ -172,12 +175,13 @@
 		<div class="block-content-wrap">
 			<!-- View mode: rendered markdown -->
 			<span
+				bind:this={viewEl}
 				class="block-content block-content--view"
 				class:hidden={editing}
 				role="button"
 				tabindex="0"
 				onclick={(e) => {
-					if ((e.target as HTMLElement).tagName !== 'A') startEditing();
+					if ((e.target as HTMLElement).tagName !== 'A') startEditing(e);
 				}}
 			>
 				{@html renderMarkdown(block.content)}
@@ -226,6 +230,18 @@
 		--zoom-w: 1.35rem;
 		--menu-w: 1.35rem;
 		--bullet-w: 1.5rem;
+	}
+	/* Hang the diple at the content column's left edge (= the search bar).
+	   The gutter bullets (zoom + menu) overflow into the left margin.
+	   Scoped to depth 0 — children indent normally (padding-left compounds).
+	   Below 850px the page margin can't hold it — revert to inline gutter. */
+	.block[data-depth='0'] {
+		margin-left: calc(-1 * (var(--zoom-w) + var(--menu-w) + var(--bullet-w) / 2));
+	}
+	@media (max-width: 850px) {
+		.block[data-depth='0'] {
+			margin-left: 0;
+		}
 	}
 	.block-row {
 		--row-h: 1.5em; /* body text line-height (default) */
@@ -350,6 +366,9 @@
 		min-height: 1.5em;
 		padding: 2px 4px;
 		border-radius: 3px;
+		/* Wrap unbroken strings (long URLs, mash-typing) inside the margins —
+		   only breaks when a word can't fit on its own line. */
+		overflow-wrap: anywhere;
 	}
 	.block-content--view {
 		cursor: text;

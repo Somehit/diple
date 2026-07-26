@@ -16,6 +16,12 @@
 }
 
 @layer base {
+	:root {
+		/* Single source of truth for the content column width —
+		   search pill, editor, and palette results share it. */
+		--content-w: 720px;
+	}
+
 	body {
 		font-size: 1.125rem;
 		background: var(--color-fond);

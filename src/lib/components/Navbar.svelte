@@ -1,16 +1,18 @@
 <script lang="ts">
 	import { fade } from 'svelte/transition';
+	import { receive } from '$lib/hero-transition';
 	import SearchPill from './SearchPill.svelte';
 	import PillTrigger from './PillTrigger.svelte';
 
 	/**
-	 * The docked top bar. Appears exactly when the hero pill scrolls up to its
-	 * level — a plain fade makes the swap invisible (same spot, same size).
+	 * Fixed top bar. Rendered when the hero is dismissed or a block is zoomed.
+	 * The pill inside uses crossfade (via hero-transition) to animate from the
+	 * hero pill's position.
 	 */
 </script>
 
 <header class="topbar" transition:fade={{ duration: 150 }}>
-	<div class="topbar-pill">
+	<div class="topbar-pill" in:receive={{ key: 'pill' }}>
 		<SearchPill>
 			<PillTrigger />
 		</SearchPill>

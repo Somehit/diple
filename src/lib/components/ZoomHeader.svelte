@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Block } from '$lib/server/db/queries';
 	import { renderMarkdown } from '$lib/utils/markdown';
+	import { caretFromClick } from '$lib/utils/caret';
 
 	let {
 		block,
@@ -24,10 +25,13 @@
 
 	let editing = $state(false);
 	let editEl: HTMLDivElement | undefined = $state();
+	let viewEl: HTMLSpanElement | undefined = $state();
 	let capturedContent = '';
+	let pendingCaret: number | null = null;
 
-	function startEditing() {
+	function startEditing(e?: MouseEvent) {
 		capturedContent = block.content;
+		pendingCaret = caretFromClick(e, viewEl, block.content.length);
 		editing = true;
 	}
 
@@ -50,13 +54,17 @@
 	}
 
 	// Seed the contenteditable and place caret when entering edit mode.
+	// pendingCaret (from the click position, null = end) is consumed once here.
 	$effect(() => {
 		if (editing && editEl) {
 			editEl.textContent = capturedContent;
+			const caret = pendingCaret;
+			pendingCaret = null;
 			editEl.focus();
 			const sel = window.getSelection();
 			if (sel && editEl.firstChild) {
-				sel.collapse(editEl.firstChild, editEl.firstChild.textContent?.length ?? 0);
+				const len = editEl.firstChild.textContent?.length ?? 0;
+				sel.collapse(editEl.firstChild, caret !== null ? Math.min(caret, len) : len);
 			} else {
 				sel?.collapse(editEl, 0);
 			}
@@ -114,6 +122,7 @@
 <header class="zoom-header">
 	<!-- View mode: rendered markdown, click to edit -->
 	<span
+		bind:this={viewEl}
 		class="zoom-title zoom-title--view"
 		class:hidden={editing}
 		role="button"
@@ -205,6 +214,8 @@
 		border-radius: 3px;
 		outline: none;
 		display: block;
+		/* Same rule as block content: unbroken strings wrap inside the margins */
+		overflow-wrap: anywhere;
 	}
 	.zoom-title--view {
 		cursor: text;
