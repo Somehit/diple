@@ -20,6 +20,17 @@
 		/* Single source of truth for the content column width —
 		   search pill, editor, and palette results share it. */
 		--content-w: 720px;
+		/*
+		 * Right help panel width — shared by HelpPanel (panel width) and
+		 * Navbar (button offsets + pill re-centring, via calc). One knob.
+		 */
+		--help-w: 300px;
+	}
+
+	@media (max-width: 600px) {
+		:root {
+			--help-w: 220px;
+		}
 	}
 
 	body {

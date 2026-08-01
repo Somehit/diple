@@ -101,7 +101,7 @@
 </script>
 
 <nav class="crumbs" aria-label="Breadcrumb">
-	{#each crumbs as crumb, i (crumb.id ?? crumb.kind)}
+	{#each crumbs as crumb, i (crumb.kind === 'ancestor' ? `ancestor:${crumb.id}` : crumb.kind)}
 		{#if i > 0}
 			<span class="sep" aria-hidden="true">›</span>
 		{/if}
@@ -147,6 +147,7 @@
 		contenteditable="true"
 		role="textbox"
 		tabindex="-1"
+		data-zoom-title
 		onblur={stopEditing}
 		onkeydown={handleEditKeydown}
 	></div>

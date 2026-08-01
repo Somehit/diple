@@ -45,11 +45,22 @@ export function matchCommands(query: string): PaletteCommand[] {
 	);
 }
 
-/** 'ctrl+shift+z' → 'Ctrl+Shift+Z' */
-function comboLabel(combo: string): string {
+/** Nicer display for single keys (arrows, Enter, …). */
+const KEY_LABELS: Record<string, string> = {
+	enter: 'Enter',
+	tab: 'Tab',
+	backspace: 'Backspace',
+	arrowup: '↑',
+	arrowdown: '↓',
+	arrowright: '→',
+	arrowleft: '←'
+};
+
+/** 'ctrl+shift+z' → 'Ctrl+Shift+Z', 'alt+arrowright' → 'Alt+→' */
+export function comboLabel(combo: string): string {
 	return combo
 		.split('+')
-		.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+		.map((part) => KEY_LABELS[part] ?? part.charAt(0).toUpperCase() + part.slice(1))
 		.join('+');
 }
 

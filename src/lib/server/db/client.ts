@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 
-const DB_PATH = process.env.DATABASE_PATH ?? './data/diple.db';
+export const DB_PATH = process.env.DATABASE_PATH ?? './data/diple.db';
 
 let db: Database.Database | null = null;
 

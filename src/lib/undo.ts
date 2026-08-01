@@ -8,7 +8,17 @@ import type { Block } from '$lib/server/db/queries';
  */
 export type Mutation =
 	| { kind: 'create'; block: Block }
-	| { kind: 'delete'; block: Block }
+	| {
+			kind: 'delete';
+			block: Block;
+			/**
+			 * Present when the delete cascaded (multi-block selection): the block's
+			 * descendants, parents first and siblings in ascending position order —
+			 * the exact replay order undo needs for FK integrity and position
+			 * shifts. Single-block deletes (Backspace) leave it undefined.
+			 */
+			descendants?: Block[];
+	  }
 	| { kind: 'update'; id: string; before: string; after: string }
 	| {
 			kind: 'move';

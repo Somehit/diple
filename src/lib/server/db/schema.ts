@@ -1,4 +1,5 @@
 import { getDb } from './client';
+import { seed } from './seed';
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS blocks (
@@ -20,20 +21,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS blocks_fts USING fts5(
 );
 `;
 
-const SEED_BLOCKS = [
-	{ id: 'root', parent_id: null, content: 'Welcome to Diple', position: 0 },
-	{ id: 'seed-child-1', parent_id: 'root', content: 'Everything is a bullet point', position: 0 },
-	{ id: 'seed-child-2', parent_id: 'root', content: 'Nest items with **Tab**', position: 1 },
-	{
-		id: 'seed-grandchild',
-		parent_id: 'seed-child-2',
-		content: 'Indent / outdent with Tab / Shift+Tab',
-		position: 0
-	},
-	{ id: 'seed-child-3', parent_id: 'root', content: 'Split a block with `Enter`', position: 2 }
-];
-
-/** Apply schema and seed blocks if the table is empty. */
+/** Apply schema and seed data if the table is empty. */
 export function initDb(): void {
 	const db = getDb();
 
@@ -51,32 +39,14 @@ export function initDb(): void {
 		db.exec('ALTER TABLE blocks ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0');
 	}
 
-	// Backfill the FTS index for databases that predate it (fresh DBs seed both
-	// tables below, so this is a no-op for them).
-	const ftsCount = db.prepare('SELECT COUNT(*) AS cnt FROM blocks_fts').get() as {
-		cnt: number;
-	};
-	if (ftsCount.cnt === 0) {
-		db.exec('INSERT INTO blocks_fts (id, content) SELECT id, content FROM blocks');
-	}
-
+	// Seed a power-user tree on first launch (empty DB) or legacy single-block DB.
 	const row = db.prepare('SELECT COUNT(*) AS cnt FROM blocks').get() as {
 		cnt: number;
 	};
 	if (row.cnt === 0) {
-		const stmt = db.prepare(
-			'INSERT INTO blocks (id, parent_id, content, position) VALUES (?, ?, ?, ?)'
-		);
-		for (const b of SEED_BLOCKS) {
-			stmt.run(b.id, b.parent_id, b.content, b.position);
-		}
+		seed();
 	} else if (row.cnt === 1) {
-		// Old seed (v0.1-alpha) with single root block → replace with hierarchy
-		const stmt = db.prepare(
-			'INSERT OR REPLACE INTO blocks (id, parent_id, content, position) VALUES (?, ?, ?, ?)'
-		);
-		for (const b of SEED_BLOCKS) {
-			stmt.run(b.id, b.parent_id, b.content, b.position);
-		}
+		// Old seed (v0.1-alpha) with single root block → replace with full tree
+		seed();
 	}
 }

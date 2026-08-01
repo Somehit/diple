@@ -1,19 +1,49 @@
+import type { PaletteCommand } from '$lib/commands';
+
 /**
- * Shared state for the command palette (open/close).
- * The palette modal lives in +layout, toggled globally.
- * Navigation is handled by importing zoomTo directly — no bridge needed.
+ * Palette state — kept minimal after the modal was removed (v0.3 refactor).
+ * The inline palette (InlinePalette.svelte) manages its own focus/blur state.
+ * Results are rendered at body level (PaletteResults.svelte) to escape the
+ * navbar's mask and backdrop-filter.
  */
 
-class PaletteStore {
-	open = $state(false);
+// --- Shared types for results portal ---
 
-	openPalette(): void {
-		this.open = true;
-	}
+export type ResultRow = {
+	id: string;
+	content: string;
+	path: { id: string; content: string }[];
+};
 
-	close(): void {
-		this.open = false;
-	}
+export type Item =
+	| { kind: 'command'; command: PaletteCommand }
+	| { kind: 'result'; row: ResultRow; recent: boolean };
+
+export interface ResultsState {
+	visible: boolean;
+	items: Item[];
+	selected: number;
+	sectionOf: (item: Item) => string;
+	choose: (item: Item) => void;
+	chooseCrumb: (e: MouseEvent, row: ResultRow, crumbId: string) => void;
+	onMousemove: (i: number) => void;
+	listEl: HTMLElement | null;
+	/** Pill position — used to anchor the dropdown below the search bar. */
+	pillTop: number;
+	pillLeft: number;
+	pillWidth: number;
 }
 
-export const palette = new PaletteStore();
+export const resultsState: ResultsState = $state({
+	visible: false,
+	items: [],
+	selected: 0,
+	sectionOf: () => '',
+	choose: () => {},
+	chooseCrumb: () => {},
+	onMousemove: () => {},
+	listEl: null,
+	pillTop: 0,
+	pillLeft: 0,
+	pillWidth: 720
+});

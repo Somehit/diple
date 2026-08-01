@@ -14,14 +14,18 @@
 	 * Per-block "•••" menu (hover-revealed, like the zoom button).
 	 * Formats the whole block via the pure transforms in format.ts — the same
 	 * logic as the selection menu — and reports through the 4-arg onSaveContent
-	 * so the change lands in the undo stack like any edit.
+	 * so the change lands in the undo stack like any edit. Clipboard actions
+	 * (copy/cut/paste/delete) address the block's whole subtree and are routed
+	 * up to the editor, which owns the tree.
 	 */
 	let {
 		block,
-		onSaveContent
+		onSaveContent,
+		onClipboardAction
 	}: {
 		block: Block;
 		onSaveContent: (id: string, before: string, after: string, caret?: number) => void;
+		onClipboardAction?: (id: string, action: FormatAction) => void;
 	} = $props();
 
 	let open = $state(false);
@@ -31,15 +35,23 @@
 	function openMenu() {
 		if (!btnEl) return;
 		const rect = btnEl.getBoundingClientRect();
-		// Clamp like SelectionMenu: keep the ~150×260 dropdown inside the viewport
+		// Clamp like SelectionMenu: keep the dropdown inside the viewport.
+		// Estimate covers clipboard section + formats + delete (~340px).
 		const x = Math.min(rect.left, (visualViewport?.width ?? window.innerWidth) - 150);
-		const y = Math.min(rect.bottom + 4, (visualViewport?.height ?? window.innerHeight) - 260);
+		const y = Math.min(rect.bottom + 4, (visualViewport?.height ?? window.innerHeight) - 340);
 		menuPos = { x, y };
 		open = true;
 	}
 
 	function apply(action: FormatAction) {
 		open = false;
+		if (
+			onClipboardAction &&
+			(action === 'copy' || action === 'cut' || action === 'paste' || action === 'delete')
+		) {
+			onClipboardAction(block.id, action);
+			return;
+		}
 		const before = block.content;
 		let after: string;
 		switch (action) {
@@ -88,7 +100,7 @@
 {#if open && menuPos}
 	<div class="menu-backdrop" role="presentation" onclick={() => (open = false)}></div>
 	<div class="menu-dropdown" style="left: {menuPos.x}px; top: {menuPos.y}px;">
-		<FormatMenuItems onApply={apply} showDelete={false} />
+		<FormatMenuItems onApply={apply} showClipboard={true} showDelete={true} />
 	</div>
 {/if}
 
@@ -137,5 +149,7 @@
 		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
 		min-width: 140px;
 		padding: 4px 0;
+		max-height: calc(100vh - 16px);
+		overflow-y: auto;
 	}
 </style>

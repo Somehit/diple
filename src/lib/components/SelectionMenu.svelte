@@ -15,17 +15,18 @@
 	let { x, y, onAction, onClose }: Props = $props();
 
 	// Clamp so the menu never overflows the viewport.
+	// Height estimate covers the clipboard section + formats + delete (~340px).
 	const clampedX = $derived(
 		Math.min(x, Math.max(visualViewport?.width ?? window.innerWidth, 0) - 150)
 	);
 	const clampedY = $derived(
-		Math.min(y, Math.max(visualViewport?.height ?? window.innerHeight, 0) - 280)
+		Math.min(y, Math.max(visualViewport?.height ?? window.innerHeight, 0) - 340)
 	);
 </script>
 
 <div class="menu-backdrop" role="presentation" onclick={onClose}></div>
 <div class="menu-dropdown" style="left: {clampedX}px; top: {clampedY}px;">
-	<FormatMenuItems onApply={onAction} showDelete={true} />
+	<FormatMenuItems onApply={onAction} showClipboard={true} showDelete={true} />
 </div>
 
 <style>
@@ -43,5 +44,7 @@
 		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
 		min-width: 140px;
 		padding: 4px 0;
+		max-height: calc(100vh - 16px);
+		overflow-y: auto;
 	}
 </style>

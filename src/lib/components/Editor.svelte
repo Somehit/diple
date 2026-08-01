@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { tick } from 'svelte';
 	import { onMount } from 'svelte';
+	import { page } from '$app/state';
 	import type { Block } from '$lib/server/db/queries';
 	import BlockComponent from './Block.svelte';
 	import ZoomHeader from './ZoomHeader.svelte';
@@ -18,30 +19,93 @@
 	import { UndoStack } from '$lib/undo';
 	import type { Mutation, UndoEntry } from '$lib/undo';
 	import {
-		currentZoomId,
+		zoomTarget,
 		cleanZoomUrl,
 		zoomTo,
 		zoomToRoot,
 		saveScroll,
 		restoreScroll
-	} from '$lib/zoom';
+	} from '$lib/zoom.svelte';
+	import { pushRecent } from '$lib/recent';
+	import { tree } from '$lib/tree.svelte';
+	import {
+		MIME_DIPLE,
+		buildPasteTree,
+		clipboardRootsFromEvent,
+		parseDipleJson,
+		parsePlainText,
+		readFromClipboard,
+		serializeToDiple,
+		writeToClipboard,
+		type PasteBlock
+	} from '$lib/clipboard';
+	import { syncBegin, syncCommit, syncFail } from '$lib/sync.svelte';
 
-	let props: { blocks: Block[]; intro?: boolean; onWorkIntent?: () => void } = $props();
-	let blocks = $state(props.blocks);
+	let {
+		blocks: initialBlocks,
+		intro,
+		onWorkIntent,
+		collapseAll = $bindable<() => void>(() => {}),
+		revealAll = $bindable<() => void>(() => {}),
+		allCollapsed = $bindable(false)
+	}: {
+		blocks: Block[];
+		intro?: boolean;
+		onWorkIntent?: () => void;
+		collapseAll?: () => void;
+		revealAll?: () => void;
+		allCollapsed?: boolean;
+	} = $props();
+	let blocks = $state(initialBlocks);
+	tree.blocks = blocks;
+	$effect(() => {
+		tree.blocks = blocks;
+	});
 
-	// --- Zoom state (page.state.zoom is reactive on pushState; page.url.searchParams is the fallback for SSR/refresh) ---
-	const zoomId = $derived(currentZoomId());
-	const zoomedBlock = $derived(zoomId ? (blocks.find((b) => b.id === zoomId) ?? null) : null);
-	/** Falls back to null when zoomId is invalid (block deleted / stale URL). */
-	const effectiveZoomId = $derived(zoomId && zoomedBlock ? zoomId : null);
+	// --- Zoom state ---
+	// zoomTarget is a module-level $state singleton (see zoom.ts). It's updated
+	// synchronously by zoomTo/zoomToRoot/cleanZoomUrl, so the {#key} swap is
+	// immediate — no microtask gap where the out-animated old view would be stuck.
+	//
+	// Popstate (back/forward) and initial SSR load: sync from page.state.
+	// SvelteKit restores page.state correctly on history navigation, and the
+	// $effect reads it reactively.  pushState updates are handled by the
+	// synchronous path (zoomTo writes zoomTarget.id before calling pushState)
+	// so the $effect's write is a harmless no-op in that case.
+	$effect(() => {
+		// Only sync when page.state.zoom is explicitly set (popstate, pushState).
+		// On direct URL loads (bookmark, typed URL), page.state.zoom is undefined
+		// during hydration — +page.svelte already seeded zoomTarget.id from
+		// data.zoomId, so we must NOT overwrite it with null.
+		if (page.state.zoom !== undefined && page.state.zoom !== zoomTarget.id) {
+			if (import.meta.env.DEV) {
+				console.warn('[zoom:overwrite]', {
+					target: zoomTarget.id,
+					pageState: page.state.zoom
+				});
+			}
+			zoomTarget.id = page.state.zoom;
+		}
+	});
+
+	const zoomedBlock = $derived(
+		zoomTarget.id ? (blocks.find((b) => b.id === zoomTarget.id) ?? null) : null
+	);
+	/** Falls back to null when zoomTarget.id is invalid (block deleted / stale URL). */
+	const effectiveZoomId = $derived(zoomTarget.id && zoomedBlock ? zoomTarget.id : null);
 
 	// Clean up the URL when the zoom target no longer exists (e.g. undone/deleted).
 	$effect(() => {
-		if (zoomId && !zoomedBlock) cleanZoomUrl();
+		if (zoomTarget.id && !zoomedBlock) {
+			if (import.meta.env.DEV) {
+				console.warn('[zoom:clean]', { target: zoomTarget.id });
+			}
+			cleanZoomUrl();
+		}
 	});
 
 	// --- Scroll management ---
-	// Saves: animateZoom() saves the OLD view's scroll before navigating out.
+	// Saves: navigateZoom() saves the OLD view's scroll before navigating out.
 	// Restores: this effect fires after a zoom change. Dezoom → restored position.
 	// Fresh zoom-in → scroll to the editor top (so the zoomed title is visible,
 	// not the hero above). First mount on root → no scroll.
@@ -117,6 +181,10 @@
 	// Position of the auto-open format menu (null = closed). Set on mouseup after a drag.
 	let selectionMenu = $state<{ x: number; y: number } | null>(null);
 
+	// Hidden textarea that receives native paste events when blocks are selected
+	// (see onWindowKeydown) — reading e.clipboardData needs no permission.
+	let clipCatcherEl: HTMLTextAreaElement | undefined = $state();
+
 	// Selection highlight overlay: one rectangle measured from the rendered DOM.
 	// Decoupled from block geometry — ancestor paddings inside the range are covered by construction.
 	let selRect = $state<{ top: number; height: number } | null>(null);
@@ -143,6 +211,16 @@
 		effectiveZoomId ? (childrenMap.get(effectiveZoomId) ?? []) : (childrenMap.get(null) ?? [])
 	);
 
+	$effect(() => {
+		if (!import.meta.env.DEV) return;
+		console.info('[zoom:view]', {
+			target: zoomTarget.id,
+			found: zoomedBlock?.id ?? null,
+			effective: effectiveZoomId,
+			roots: rootBlocks.map((block) => block.id)
+		});
+	});
+
 	/** Depth-first flat list for arrow-key navigation. Starts from the zoom root. Skips collapsed subtrees. */
 	const flatBlocks = $derived.by(() => {
 		const result: Block[] = [];
@@ -161,6 +239,22 @@
 		const idx = new Map<string, number>();
 		flatBlocks.forEach((b, i) => idx.set(b.id, i));
 		return idx;
+	});
+
+	/** True when every parent in the visible tree is collapsed. */
+	const isAllCollapsed = $derived.by(() => {
+		function walk(parentId: string | null): boolean {
+			const kids = childrenMap.get(parentId) ?? [];
+			for (const kid of kids) {
+				const hasChildren = (childrenMap.get(kid.id)?.length ?? 0) > 0;
+				if (hasChildren) {
+					if (kid.collapsed === 0) return false;
+					if (!walk(kid.id)) return false;
+				}
+			}
+			return true;
+		}
+		return walk(effectiveZoomId);
 	});
 
 	/**
@@ -196,15 +290,47 @@
 		measureSelection();
 	});
 
+	// Sync bindable props to parent so the page/Navbar can read them.
+	$effect(() => {
+		collapseAll = handleCollapseAll;
+		revealAll = handleRevealAll;
+		allCollapsed = isAllCollapsed;
+	});
+
 	function getSiblings(parentId: string | null): Block[] {
 		return blocks.filter((b) => b.parent_id === parentId).sort((a, b) => a.position - b.position);
 	}
 
 	// --- API helpers ---
 
-	/** Surface server failures in devtools — optimistic flows stay silent-by-design, never throw. */
+	/**
+	 * Surface server failures in devtools, then throw. Callers apply changes
+	 * optimistically before the API responds — a swallowed error would leave the
+	 * client believing a change is saved when the server never saw it.
+	 */
 	function checkRes(res: Response, label: string) {
-		if (!res.ok) console.error(`[api] ${label} failed: ${res.status} ${res.statusText}`);
+		if (!res.ok) {
+			console.error(`[api] ${label} failed: ${res.status} ${res.statusText}`);
+			throw new Error(`${label}: ${res.status} ${res.statusText}`);
+		}
+	}
+
+	/**
+	 * Wrap a mutation fetch so the sync dot tracks it: pendingLocal++ while in
+	 * flight, -- on ack, offline on failure. checkRes lives here — a non-ok
+	 * response is a failure like any network error.
+	 */
+	async function tracked(label: string, request: Promise<Response>): Promise<Response> {
+		syncBegin();
+		try {
+			const res = await request;
+			checkRes(res, label);
+			syncCommit();
+			return res;
+		} catch (e) {
+			syncFail();
+			throw e;
+		}
 	}
 
 	async function apiCreate(
@@ -213,45 +339,84 @@
 		position: number,
 		id?: string
 	): Promise<Block> {
-		const res = await fetch('/api/blocks', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ parent_id, content, position, id })
-		});
-		checkRes(res, `POST /api/blocks (${id ?? 'new'})`);
+		const res = await tracked(
+			`POST /api/blocks (${id ?? 'new'})`,
+			fetch('/api/blocks', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ parent_id, content, position, id })
+			})
+		);
 		return res.json();
 	}
 
 	async function apiMove(id: string, parent_id: string | null, position: number) {
-		const res = await fetch(`/api/blocks/${id}`, {
-			method: 'PATCH',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ parent_id, position })
-		});
-		checkRes(res, `PATCH move ${id}`);
+		await tracked(
+			`PATCH move ${id}`,
+			fetch(`/api/blocks/${id}`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ parent_id, position })
+			})
+		);
 	}
 
 	async function apiUpdateContent(id: string, content: string) {
-		const res = await fetch(`/api/blocks/${id}`, {
-			method: 'PATCH',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ content })
-		});
-		checkRes(res, `PATCH content ${id}`);
+		await tracked(
+			`PATCH content ${id}`,
+			fetch(`/api/blocks/${id}`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ content })
+			})
+		);
 	}
 
 	async function apiDelete(id: string) {
-		const res = await fetch(`/api/blocks/${id}`, { method: 'DELETE' });
-		checkRes(res, `DELETE ${id}`);
+		await tracked(`DELETE ${id}`, fetch(`/api/blocks/${id}`, { method: 'DELETE' }));
 	}
 
 	async function apiSetCollapsed(id: string, collapsed: boolean) {
-		const res = await fetch(`/api/blocks/${id}`, {
-			method: 'PATCH',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ collapsed: collapsed ? 1 : 0 })
-		});
-		checkRes(res, `PATCH collapsed ${id}`);
+		await tracked(
+			`PATCH collapsed ${id}`,
+			fetch(`/api/blocks/${id}`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ collapsed: collapsed ? 1 : 0 })
+			})
+		);
+	}
+
+	// --- Sync failure feedback ---
+
+	/** Non-null while a sync-error toast is visible. */
+	let syncError = $state<string | null>(null);
+	let syncErrorTimer: ReturnType<typeof setTimeout> | undefined;
+
+	/** Brief toast for failed server round-trips — optimistic UI must never fail silently. */
+	function showSyncError(message: string) {
+		syncError = message;
+		clearTimeout(syncErrorTimer);
+		syncErrorTimer = setTimeout(() => (syncError = null), 5000);
+	}
+
+	/**
+	 * Fire-and-forget content save with rollback. On failure, restores `before`
+	 * only if the block wasn't edited since — newer keystrokes always win.
+	 */
+	async function saveContentWithRollback(id: string, before: string, after: string) {
+		try {
+			await apiUpdateContent(id, after);
+		} catch {
+			const blk = blocks.find((b) => b.id === id);
+			if (blk && blk.content === after) {
+				blk.content = before;
+				blocks = [...blocks];
+				showSyncError("Couldn't save — change reverted.");
+			} else {
+				showSyncError("Couldn't save — kept locally, will retry on next edit.");
+			}
+		}
 	}
 
 	// --- Callbacks ---
@@ -260,35 +425,123 @@
 		const block = blocks.find((b) => b.id === id);
 		if (!block) return;
 		block.collapsed = block.collapsed ? 0 : 1;
+		const applied = block.collapsed;
 		blocks = [...blocks];
-		apiSetCollapsed(id, block.collapsed === 1);
+		apiSetCollapsed(id, applied === 1).catch(() => {
+			// Revert only if the user hasn't toggled again since
+			if (block.collapsed === applied) {
+				block.collapsed = applied ? 0 : 1;
+				blocks = [...blocks];
+			}
+			showSyncError("Couldn't save — change reverted.");
+		});
 	}
 
-	/** Zoom navigation (breadcrumb click): ancestor id → zoom to it; null → root. */
-	function handleZoomNavigate(id: string | null) {
-		animateZoom(id);
+	async function apiSetCollapsedBatch(items: { id: string; collapsed: number }[]) {
+		await tracked(
+			'POST /api/blocks/batch-collapse',
+			fetch('/api/blocks/batch-collapse', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ items })
+			})
+		);
+	}
+
+	/** One transaction for the whole pasted subtree — see createBlocksBatch. */
+	async function apiCreateBatch(blocks: Block[]) {
+		await tracked(
+			'POST /api/blocks/batch-create',
+			fetch('/api/blocks/batch-create', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					blocks: blocks.map((b) => ({
+						id: b.id,
+						parent_id: b.parent_id,
+						content: b.content,
+						position: b.position,
+						collapsed: b.collapsed
+					}))
+				})
+			})
+		);
 	}
 
 	/**
-	 * Animate the current view out (scale→0.95, opacity→0, 150ms), then swap
-	 * to the target zoom level. Used for editor-initiated zooms (button, keyboard,
-	 * breadcrumb). Palette-clicks skip the out-animation (modal overlays the view).
+	 * Collect every block reachable from `roots` via childrenMap (the full
+	 * visible subtree), regardless of current collapsed state.
 	 */
-	async function animateZoom(targetId: string | null) {
-		// Save scroll position for the current view before the out animation
+	function collectSubtree(roots: Block[]): Block[] {
+		const result: Block[] = [];
+		function walk(list: Block[]) {
+			for (const b of list) {
+				result.push(b);
+				const kids = childrenMap.get(b.id);
+				if (kids) walk(kids);
+			}
+		}
+		walk(roots);
+		return result;
+	}
+
+	function handleCollapseAll() {
+		const all = collectSubtree(rootBlocks);
+		const items: { id: string; collapsed: number }[] = [];
+		for (const b of all) {
+			const kids = childrenMap.get(b.id);
+			if (kids && kids.length > 0) {
+				b.collapsed = 1;
+				items.push({ id: b.id, collapsed: 1 });
+			}
+		}
+		if (items.length === 0) return;
+		blocks = [...blocks];
+		apiSetCollapsedBatch(items).catch(() => showSyncError("Couldn't save collapse state."));
+	}
+
+	function handleRevealAll() {
+		const all = collectSubtree(rootBlocks);
+		const items: { id: string; collapsed: number }[] = [];
+		for (const b of all) {
+			const kids = childrenMap.get(b.id);
+			if (kids && kids.length > 0 && b.collapsed === 1) {
+				b.collapsed = 0;
+				items.push({ id: b.id, collapsed: 0 });
+			}
+		}
+		if (items.length === 0) return;
+		blocks = [...blocks];
+		apiSetCollapsedBatch(items).catch(() => showSyncError("Couldn't save reveal state."));
+	}
+
+	/**
+	 * Synchronous zoom navigation — editor-initiated zooms (button, keyboard,
+	 * breadcrumb, home).  Saves the current scroll position, then calls zoomTo
+	 * or zoomToRoot synchronously.  zoomTarget.id is updated before pushState
+	 * (see zoom.svelte.ts), so the {#key} block swaps in the same microtask —
+	 * no async gap that could leave the old view stuck in a broken state.
+	 *
+	 * Palette and sidebar also call zoomTo directly without going through
+	 * this wrapper, which is fine — saveScroll is only needed for editor
+	 * zooms where the user may dezoom and expect to find their old scroll.
+	 */
+	function navigateZoom(targetId: string | null) {
 		saveScroll(effectiveZoomId ?? '__root__', window.scrollY);
-		// Apply the out-animation to the current zoom-view. It gets destroyed on
-		// remount when the {#key} swaps — no cleanup needed (no flash possible).
-		const view = editorEl?.querySelector('.zoom-view');
-		view?.classList.add('zoom-view--out');
-		await new Promise((r) => setTimeout(r, 150));
 		if (targetId === null) zoomToRoot();
 		else zoomTo(targetId);
 	}
 
+	/** Zoom navigation (breadcrumb click): ancestor id → zoom to it; null → root. */
+	function handleZoomNavigate(id: string | null) {
+		navigateZoom(id);
+	}
+
 	/** Zoom into a block (hover button or Alt+→). */
 	function handleZoom(id: string) {
-		animateZoom(id);
+		navigateZoom(id);
+		const blk = blocks.find((b) => b.id === id);
+		if (blk) pushRecent({ id: blk.id, content: blk.content, path: pathToRoot(blk) });
 	}
 
 	/** Dezoom one level: zoom to the parent of the current zoom root, or Home. */
@@ -296,7 +549,26 @@
 		// No-op at root — avoids a redundant history entry
 		if (!effectiveZoomId) return;
 		const target = zoomedBlock?.parent_id ?? null;
-		animateZoom(target);
+		navigateZoom(target);
+	}
+
+	/**
+	 * Build breadcrumb path (root → direct parent) for a block, for recents.
+	 * Uses the live blocks array — no DB call needed.
+	 */
+	function pathToRoot(block: Block): { id: string; content: string }[] {
+		const path: { id: string; content: string }[] = [];
+		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- utility, not reactive
+		const seen = new Set<string>([block.id]);
+		let cursor = block.parent_id;
+		while (cursor && !seen.has(cursor)) {
+			seen.add(cursor);
+			const parent = blocks.find((b) => b.id === cursor);
+			if (!parent) break;
+			path.unshift({ id: parent.id, content: parent.content });
+			cursor = parent.parent_id;
+		}
+		return path;
 	}
 
 	/**
@@ -307,12 +579,6 @@
 	async function handleCreateFirstChild() {
 		if (!zoomedBlock) return;
 		const parentId = zoomedBlock.id;
-
-		// Shift existing children to make room at position 0
-		const siblings = getSiblings(parentId);
-		for (const sib of siblings) {
-			sib.position += 1;
-		}
 
 		const newBlock: Block = {
 			id: crypto.randomUUID(),
@@ -335,6 +601,10 @@
 				{ id: zoomedBlock.id, offset: zoomedBlock.content.length },
 				{ id: newBlock.id, offset: 0 }
 			);
+		} catch {
+			removeBlockLocal(newBlock);
+			if (autoEditRequest?.id === newBlock.id) autoEditRequest = null;
+			showSyncError("Couldn't save — change reverted.");
 		} finally {
 			inflight--;
 		}
@@ -345,13 +615,8 @@
 	 * position 0 (newest on top — the "stream" flow), focuses it for typing.
 	 */
 	async function handleCreateRootBlock() {
-		props.onWorkIntent?.();
+		onWorkIntent?.();
 		captureZoneUsed = true;
-
-		const siblings = getSiblings(null);
-		for (const sib of siblings) {
-			sib.position += 1;
-		}
 
 		const newBlock: Block = {
 			id: crypto.randomUUID(),
@@ -374,6 +639,10 @@
 				{ id: newBlock.id, offset: 0 },
 				{ id: newBlock.id, offset: 0 }
 			);
+		} catch {
+			removeBlockLocal(newBlock);
+			if (autoEditRequest?.id === newBlock.id) autoEditRequest = null;
+			showSyncError("Couldn't save — change reverted.");
 		} finally {
 			inflight--;
 		}
@@ -390,7 +659,7 @@
 	 * own handler never runs.
 	 */
 	function handleClickIntent() {
-		props.onWorkIntent?.();
+		onWorkIntent?.();
 	}
 
 	// --- Undo infrastructure ---
@@ -406,7 +675,7 @@
 	}
 
 	function handleSaveContent(id: string, before: string, after: string, caret?: number) {
-		apiUpdateContent(id, after);
+		saveContentWithRollback(id, before, after);
 		if (before !== after) {
 			recordEntry(
 				[{ kind: 'update', id, before, after }],
@@ -414,6 +683,9 @@
 				{ id, offset: caret ?? after.length }
 			);
 		}
+		// Push edited block to recents so it shows in the command palette
+		const blk = blocks.find((b) => b.id === id);
+		if (blk) pushRecent({ id: blk.id, content: after, path: pathToRoot(blk) });
 	}
 
 	// --- Local tree manipulation (position-aware, mirrors server transaction logic) ---
@@ -468,11 +740,28 @@
 			case 'delete': {
 				const blk = m.block;
 				if (direction === 'do') {
-					removeBlockLocal(blk);
+					// Live lookup: earlier mutations of the same replay may have
+					// shifted positions since this one was recorded.
+					const live = blocks.find((b) => b.id === blk.id) ?? blk;
+					removeBlockLocal(live);
+					if (m.descendants?.length) {
+						const ids = m.descendants.map((d) => d.id);
+						blocks = blocks.filter((b) => !ids.includes(b.id));
+					}
 					await apiDelete(blk.id);
 				} else {
+					// Restore the subtree parents-first: each create references an
+					// existing parent (FK), and position shifts stay correct with
+					// siblings coming back in ascending position order.
 					insertBlockLocal(blk);
 					await apiCreate(blk.parent_id, blk.content, blk.position, blk.id);
+					// createBlock resets collapsed server-side — re-apply the recorded state
+					if (blk.collapsed === 1) await apiSetCollapsed(blk.id, true);
+					for (const d of m.descendants ?? []) {
+						insertBlockLocal(d);
+						await apiCreate(d.parent_id, d.content, d.position, d.id);
+						if (d.collapsed === 1) await apiSetCollapsed(d.id, true);
+					}
 				}
 				break;
 			}
@@ -541,22 +830,23 @@
 			const from = { parent_id: block.parent_id, position: block.position };
 			inflight++;
 			try {
-				await outdent(block, 0);
+				// No-op (zoom boundary) or rolled back — nothing to record
+				if (!(await outdent(block, 0))) return;
+				recordEntry(
+					[
+						{
+							kind: 'move',
+							id: block.id,
+							from,
+							to: { parent_id: block.parent_id, position: block.position }
+						}
+					],
+					{ id: block.id, offset: 0 },
+					{ id: block.id, offset: 0 }
+				);
 			} finally {
 				inflight--;
 			}
-			recordEntry(
-				[
-					{
-						kind: 'move',
-						id: block.id,
-						from,
-						to: { parent_id: block.parent_id, position: block.position }
-					}
-				],
-				{ id: block.id, offset: 0 },
-				{ id: block.id, offset: 0 }
-			);
 			return;
 		}
 
@@ -589,6 +879,10 @@
 					{ id: block.id, offset: 0 },
 					{ id: newBlock.id, offset: 0 }
 				);
+			} catch {
+				removeBlockLocal(newBlock);
+				if (autoEditRequest?.id === newBlock.id) autoEditRequest = null;
+				showSyncError("Couldn't save — change reverted.");
 			} finally {
 				inflight--;
 			}
@@ -614,7 +908,6 @@
 
 		block.content = before;
 		el.textContent = before;
-		apiUpdateContent(block.id, before);
 
 		// ID generated client-side (the server accepts it) — no pending-ID window during
 		// which actions on the new block (delete, move, collapse) would hit the API
@@ -632,7 +925,10 @@
 
 		inflight++;
 		try {
+			// Create first, then truncate: if the create fails, nothing was persisted
+			// server-side and the rollback below is exact.
 			await apiCreate(targetParentId, after, newPos, newBlock.id);
+			await apiUpdateContent(block.id, before);
 			// autoEdit was consumed when the new block mounted (stable ID → no recreation)
 			autoEditRequest = null;
 
@@ -645,17 +941,34 @@
 				{ id: block.id, offset: cursorPos },
 				{ id: newBlock.id, offset: 0 }
 			);
+		} catch {
+			removeBlockLocal(newBlock);
+			// Best-effort server cleanup in case the create went through before a
+			// later step failed (deleting a never-created id is a silent no-op).
+			void apiDelete(newBlock.id).catch(() => undefined);
+			// Restore the full text only if the user hasn't typed since
+			if (block.content === before) {
+				block.content = text;
+				el.textContent = text;
+			}
+			if (autoEditRequest?.id === newBlock.id) autoEditRequest = null;
+			showSyncError("Couldn't save — change reverted.");
 		} finally {
 			inflight--;
 		}
 	}
 
-	async function indent(block: Block, caret: number) {
+	/**
+	 * Returns true when the move was persisted. On API failure the block is
+	 * moved back locally and false is returned, so callers skip the undo entry.
+	 */
+	async function indent(block: Block, caret: number): Promise<boolean> {
 		const siblings = getSiblings(block.parent_id);
 		const idx = siblings.findIndex((b) => b.id === block.id);
-		if (idx <= 0) return;
+		if (idx <= 0) return false;
 
 		const newParent = siblings[idx - 1];
+		const from = { parent_id: block.parent_id, position: block.position };
 
 		for (const sib of siblings.slice(idx + 1)) {
 			sib.position -= 1;
@@ -671,19 +984,28 @@
 		blocks = [...blocks];
 		await tick();
 		autoEditRequest = null;
-		await apiMove(block.id, newParent.id, newPos);
+		try {
+			await apiMove(block.id, newParent.id, newPos);
+			return true;
+		} catch {
+			moveBlockLocal(block, from.parent_id, from.position);
+			showSyncError("Couldn't save — change reverted.");
+			return false;
+		}
 	}
 
-	async function outdent(block: Block, caret: number) {
-		if (block.parent_id === null) return;
+	/** Same contract as indent: true when persisted, false after rollback/no-op. */
+	async function outdent(block: Block, caret: number): Promise<boolean> {
+		if (block.parent_id === null) return false;
 
 		// Zoom boundary: children of the zoom root can't outdent past it — they'd
 		// move to an invisible parent and disappear from the current view.
-		if (block.parent_id === effectiveZoomId) return;
+		if (block.parent_id === effectiveZoomId) return false;
 
 		const parent = blocks.find((b) => b.id === block.parent_id);
-		if (!parent) return;
+		if (!parent) return false;
 
+		const from = { parent_id: block.parent_id, position: block.position };
 		const grandParentId = parent.parent_id;
 		const parentIdx = getSiblings(grandParentId).findIndex((b) => b.id === parent.id);
 
@@ -706,14 +1028,21 @@
 		blocks = [...blocks];
 		await tick();
 		autoEditRequest = null;
-		await apiMove(block.id, grandParentId, newPos);
+		try {
+			await apiMove(block.id, grandParentId, newPos);
+			return true;
+		} catch {
+			moveBlockLocal(block, from.parent_id, from.position);
+			showSyncError("Couldn't save — change reverted.");
+			return false;
+		}
 	}
 
 	async function handleTab(e: KeyboardEvent, block: Block) {
 		e.preventDefault();
 		const caret = window.getSelection()?.focusOffset ?? 0;
 		const from = { parent_id: block.parent_id, position: block.position };
-		await indent(block, caret);
+		if (!(await indent(block, caret))) return;
 		recordEntry(
 			[
 				{
@@ -732,7 +1061,7 @@
 		e.preventDefault();
 		const caret = window.getSelection()?.focusOffset ?? 0;
 		const from = { parent_id: block.parent_id, position: block.position };
-		await outdent(block, caret);
+		if (!(await outdent(block, caret))) return;
 		recordEntry(
 			[
 				{
@@ -763,7 +1092,7 @@
 		// If the block has a parent, outdent (move up one level) — regardless of content
 		if (block.parent_id !== null) {
 			const from = { parent_id: block.parent_id, position: block.position };
-			await outdent(block, 0);
+			if (!(await outdent(block, 0))) return;
 			recordEntry(
 				[
 					{
@@ -808,7 +1137,13 @@
 				(document.activeElement as HTMLElement | null)?.blur();
 			}
 
-			await apiDelete(block.id);
+			try {
+				await apiDelete(block.id);
+			} catch {
+				insertBlockLocal(block);
+				showSyncError("Couldn't save — change reverted.");
+				return;
+			}
 
 			recordEntry(
 				[
@@ -838,7 +1173,13 @@
 				const prevKids = childrenMap.get(prev.id) ?? [];
 				if (prev.content.trim() === '' && prevKids.length === 0) {
 					removeBlockLocal(prev);
-					await apiDelete(prev.id);
+					try {
+						await apiDelete(prev.id);
+					} catch {
+						insertBlockLocal(prev);
+						showSyncError("Couldn't save — change reverted.");
+						return;
+					}
 					recordEntry(
 						[{ kind: 'delete', block: { ...prev } }],
 						{ id: block.id, offset: 0 },
@@ -849,20 +1190,26 @@
 		}
 	}
 
+	/**
+	 * Arrow keys navigate BETWEEN blocks, not line-by-line inside them (blocks
+	 * are single-line). The caret lands on the neighbor at the closest position
+	 * to where it was — clamped to the neighbor's length. On the first block
+	 * (up) or last block (down) there is no neighbor: let the browser handle it
+	 * (caret to line start/end — still useful inside a long wrapped block).
+	 */
 	async function handleArrowUp(e: KeyboardEvent, block: Block) {
 		const el = blockEls.get(block.id);
 		if (!el) return;
 
 		const sel = window.getSelection();
 		const cursorPos = sel?.focusOffset ?? 0;
-		if (cursorPos > 0) return;
+
+		const idx = flatIndex.get(block.id);
+		if (idx === undefined || idx <= 0) return; // no block above → native
 
 		e.preventDefault();
-		const idx = flatIndex.get(block.id);
-		if (idx === undefined || idx <= 0) return;
-
 		const prev = flatBlocks[idx - 1];
-		autoEditRequest = { id: prev.id, caret: prev.content.length };
+		autoEditRequest = { id: prev.id, caret: Math.min(cursorPos, prev.content.length) };
 		await tick();
 		autoEditRequest = null;
 	}
@@ -871,17 +1218,15 @@
 		const el = blockEls.get(block.id);
 		if (!el) return;
 
-		const text = el.textContent ?? '';
 		const sel = window.getSelection();
 		const cursorPos = sel?.focusOffset ?? 0;
-		if (cursorPos < text.length) return;
+
+		const idx = flatIndex.get(block.id);
+		if (idx === undefined || idx >= flatBlocks.length - 1) return; // no block below → native
 
 		e.preventDefault();
-		const idx = flatIndex.get(block.id);
-		if (idx === undefined || idx >= flatBlocks.length - 1) return;
-
 		const next = flatBlocks[idx + 1];
-		autoEditRequest = { id: next.id, caret: 0 };
+		autoEditRequest = { id: next.id, caret: Math.min(cursorPos, next.content.length) };
 		await tick();
 		autoEditRequest = null;
 	}
@@ -913,6 +1258,11 @@
 		dragAnchorId = id;
 		dragStartX = e.clientX;
 		dragStartY = e.clientY;
+		// Block-selection is the only drag in view mode: apply user-select:none
+		// immediately so the browser never starts a native text selection inside
+		// the blocks — it would otherwise survive the drag in some browsers and
+		// end up coexisting with the block selection.
+		editorEl?.classList.add('editor--selecting');
 	}
 
 	function onWindowMousemove(e: MouseEvent) {
@@ -929,9 +1279,6 @@
 		if (dx * dx + dy * dy < 16) return;
 
 		dragActive = true;
-		// Kill any native text selection that may have started during the first few pixels
-		window.getSelection()?.removeAllRanges();
-		editorEl?.classList.add('editor--selecting');
 		updateDragSelection(e);
 	}
 
@@ -943,10 +1290,18 @@
 		dragPotential = false;
 		dragActive = false;
 		editorEl?.classList.remove('editor--selecting');
+		// The drag may leave a native text selection behind in some browsers
+		// when user-select:none is removed — clean it so only the block
+		// selection overlay remains.
+		window.getSelection()?.removeAllRanges();
 	}
 
 	/** Compute the range between the anchor and the block under the cursor, in flatBlocks order. */
 	function updateDragSelection(e: MouseEvent) {
+		// Block selection and text selection must never coexist: kill any text
+		// selection on every update (e.g. one started inside an edited block).
+		window.getSelection()?.removeAllRanges();
+
 		const blockEl = document
 			.elementFromPoint(e.clientX, e.clientY)
 			?.closest('[data-block-id]') as HTMLElement | null;
@@ -989,13 +1344,38 @@
 	}
 
 	/**
-	 * Delete all selected blocks (with their descendants) both client-side and server-side.
-	 * Only calls API for top-level selected blocks — descendants are handled by FK cascade.
+	 * The selected blocks that have no selected ancestor — the roots of the
+	 * selection. Descendants always travel with their root, so every selection
+	 * action (copy/cut/delete) only needs to address these. Sorted in flat
+	 * (visual) order so the clipboard contents and paste targets match the screen.
 	 */
-	async function deleteSelectedBlocks() {
-		// Find top-level selected blocks (those without a selected ancestor)
-		const topLevelIds: string[] = [];
+	function topLevelSelectedIds(): string[] {
+		const top: string[] = [];
 		for (const id of selectedIds) {
+			let isDescendant = false;
+			let parentId = blocks.find((b) => b.id === id)?.parent_id ?? null;
+			while (parentId) {
+				if (selectedIds.has(parentId)) {
+					isDescendant = true;
+					break;
+				}
+				parentId = blocks.find((b) => b.id === parentId)?.parent_id ?? null;
+			}
+			if (!isDescendant) top.push(id);
+		}
+		return top.sort((a, b) => (flatIndex.get(a) ?? 0) - (flatIndex.get(b) ?? 0));
+	}
+
+	/**
+	 * Delete a set of blocks (with their descendants) both client-side and server-side.
+	 * Only calls API for top-level blocks — descendants are handled by FK cascade.
+	 * Recorded as one undo entry: a delete mutation per root, each carrying its
+	 * whole subtree so undo can restore it.
+	 */
+	async function deleteBlocks(ids: Iterable<string>) {
+		// Find top-level blocks (those without an ancestor in the same set)
+		const topLevelIds: string[] = [];
+		for (const id of ids) {
 			let isDescendant = false;
 			let parentId = blocks.find((b) => b.id === id)?.parent_id ?? null;
 			while (parentId) {
@@ -1008,26 +1388,242 @@
 			if (!isDescendant) topLevelIds.push(id);
 		}
 
-		// Collect all IDs to remove: top-level + their descendants
 		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- local, not in reactive context
 		const toRemove = new Set<string>();
-		function collectDescendants(blockId: string) {
-			toRemove.add(blockId);
-			const kids = childrenMap.get(blockId) ?? [];
-			for (const kid of kids) {
-				collectDescendants(kid.id);
+		/** Subtree copies, parents first and siblings in position order — undo's replay order. */
+		function subtreeOf(root: Block): Block[] {
+			const subtree: Block[] = [];
+			function collect(blk: Block) {
+				subtree.push({ ...blk });
+				toRemove.add(blk.id);
+				for (const kid of childrenMap.get(blk.id) ?? []) collect(kid);
 			}
+			collect(root);
+			return subtree;
 		}
-		for (const id of topLevelIds) collectDescendants(id);
 
-		// Optimistic: remove from client state
+		const roots = topLevelIds
+			.map((id) => blocks.find((b) => b.id === id))
+			.filter((b): b is Block => b !== undefined);
+		if (roots.length === 0) return;
+
+		const mutations: Mutation[] = roots.map((root): Mutation => {
+			const subtree = subtreeOf(root);
+			return { kind: 'delete', block: subtree[0], descendants: subtree.slice(1) };
+		});
+
+		// Snapshot for rollback: a failed delete loop must not leave partial state
+		const snapshot = blocks.map((b) => ({ ...b }));
 		clearSelection();
+
+		// Optimistic: drop the subtrees, then close the position gaps among the
+		// remaining siblings of every affected parent — mirrors the server's
+		// per-delete renumbering (this used to drift until the next reload).
+		const affectedParents = roots.map((r) => r.parent_id);
 		blocks = blocks.filter((b) => !toRemove.has(b.id));
+		for (const pid of affectedParents) {
+			getSiblings(pid).forEach((sib, i) => (sib.position = i));
+		}
+		blocks = [...blocks];
 
 		// Delete top-level blocks via API — FK ON DELETE CASCADE handles server-side children
-		for (const id of topLevelIds) {
-			await apiDelete(id);
+		try {
+			for (const id of topLevelIds) {
+				await apiDelete(id);
+			}
+		} catch {
+			blocks = snapshot;
+			showSyncError("Couldn't save — deletion reverted.");
+			return;
 		}
+
+		// Focus the first restored root after an undo
+		recordEntry(mutations, { id: roots[0].id, offset: 0 }, { id: roots[0].id, offset: 0 });
+	}
+
+	/** Delete the currently selected blocks (drag selection, Backspace/Delete, menu). */
+	function deleteSelectedBlocks() {
+		return deleteBlocks(selectedIds);
+	}
+
+	// --- Clipboard: copy / cut / paste ---
+
+	/**
+	 * Copy the selected blocks (with their subtrees) into the clipboard: diple's
+	 * JSON format (structure-preserving) plus tab-indented plain text. Writing
+	 * the system clipboard is best-effort; the session buffer covers same-tab
+	 * pastes either way.
+	 */
+	function copySelectedBlocks() {
+		const roots = topLevelSelectedIds()
+			.map((id) => blocks.find((b) => b.id === id))
+			.filter((b): b is Block => b !== undefined);
+		if (roots.length === 0) return;
+		writeToClipboard(serializeToDiple(buildPasteTree(roots, childrenMap)));
+	}
+
+	/** Copy, then delete — the two halves of a cut land as separate undo entries. */
+	async function cutSelectedBlocks() {
+		copySelectedBlocks();
+		await deleteSelectedBlocks();
+	}
+
+	/**
+	 * Paste target when blocks are selected: right after the LAST selected block
+	 * (in flat order), at that block's level. Drag selections are always a
+	 * contiguous flat range, so "last" is well-defined; pasting into a deep
+	 * selection lands inside that block's parent, mirroring where the anchor
+	 * sits.
+	 */
+	function selectionPasteTarget(): { parentId: string | null; position: number } | null {
+		const last = [...selectedIds]
+			.map((id) => blocks.find((b) => b.id === id))
+			.filter((b): b is Block => b !== undefined)
+			.sort((a, b) => (flatIndex.get(a.id) ?? 0) - (flatIndex.get(b.id) ?? 0))
+			.at(-1);
+		if (!last) return null;
+		return { parentId: last.parent_id, position: last.position + 1 };
+	}
+
+	/**
+	 * Insert a clipboard tree as siblings starting at `position` under
+	 * `parentId`, structure preserved. New UUIDs are minted — a paste is always
+	 * a fresh copy. The flat insertion list is parents-first (each child
+	 * references an existing parent, and insertBlockLocal shifts by insert), and
+	 * each sibling group carries final, distinct ascending positions so the
+	 * per-insert shifting never reorders the pasted rows. One undo entry with a
+	 * create mutation per block.
+	 */
+	async function pasteRoots(parentId: string | null, position: number, roots: PasteBlock[]) {
+		const created: Block[] = [];
+		function walk(list: PasteBlock[], targetParentId: string | null, basePos: number) {
+			list.forEach((node, i) => {
+				const blk: Block = {
+					id: crypto.randomUUID(),
+					parent_id: targetParentId,
+					content: node.content,
+					position: basePos + i,
+					collapsed: node.collapsed,
+					created_at: Date.now()
+				};
+				created.push(blk);
+				walk(node.children, blk.id, 0);
+			});
+		}
+		walk(roots, parentId, position);
+
+		const snapshot = blocks.map((b) => ({ ...b }));
+		clearSelection();
+		for (const blk of created) insertBlockLocal(blk);
+
+		try {
+			await apiCreateBatch(created);
+		} catch {
+			blocks = snapshot;
+			showSyncError("Couldn't save — paste reverted.");
+			return;
+		}
+
+		recordEntry(
+			created.map((blk) => ({ kind: 'create', block: { ...blk } }) as Mutation),
+			{ id: created[0].id, offset: 0 },
+			{ id: created[0].id, offset: 0 }
+		);
+	}
+
+	/**
+	 * Resolve a paste with the current selection: drop the tree after the last
+	 * selected block — or at the end of the current view's roots when nothing
+	 * is selected (no anchor case). `roots` may be passed in when the caller
+	 * already read the clipboard (the catcher textarea); otherwise the
+	 * clipboard is read here (menu "Coller" path, permission required).
+	 */
+	async function pasteAtSelection(roots?: PasteBlock[]) {
+		const resolved = roots ?? (await readFromClipboard());
+		if (!resolved || resolved.length === 0) return;
+		const target = selectionPasteTarget();
+		if (target) await pasteRoots(target.parentId, target.position, resolved);
+		else
+			await pasteRoots(effectiveZoomId, (childrenMap.get(effectiveZoomId) ?? []).length, resolved);
+	}
+
+	/**
+	 * "•••" menu actions: address one block's whole subtree. Copy/cut write the
+	 * subtree to the clipboard; paste inserts after the block; delete cascades
+	 * like the multi-block delete (same undo entry).
+	 */
+	async function handleBlockClipboardAction(id: string, action: FormatAction) {
+		const block = blocks.find((b) => b.id === id);
+		if (!block) return;
+		switch (action) {
+			case 'copy':
+				writeToClipboard(serializeToDiple(buildPasteTree([block], childrenMap)));
+				break;
+			case 'cut': {
+				writeToClipboard(serializeToDiple(buildPasteTree([block], childrenMap)));
+				await deleteBlocks([id]);
+				break;
+			}
+			case 'paste': {
+				const roots = await readFromClipboard();
+				if (roots && roots.length > 0) await pasteRoots(block.parent_id, block.position + 1, roots);
+				break;
+			}
+			case 'delete':
+				await deleteBlocks([id]);
+				break;
+			default:
+				break; // formatting actions never arrive here
+		}
+	}
+
+	/**
+	 * Paste handler of the hidden catcher textarea. Receives the native paste
+	 * event when blocks are selected (the keydown focused the catcher instead
+	 * of preventDefaulting). e.clipboardData is readable without any clipboard
+	 * permission; then the paste lands after the last selected block and focus
+	 * returns to the document.
+	 */
+	function handleClipCatcherPaste(e: ClipboardEvent) {
+		e.preventDefault();
+		const roots = clipboardRootsFromEvent(e.clipboardData);
+		(e.target as HTMLElement).blur();
+		if (!roots || roots.length === 0) return;
+		void pasteAtSelection(roots);
+	}
+
+	/**
+	 * Edit-mode paste (delegated from .editor). When the clipboard carries
+	 * diple's own block format OR multi-line external text, take over: insert
+	 * the structure as siblings after the block being edited, so the focus
+	 * never leaves it. Text selection and single-line external text keep the
+	 * native behavior — replacing selected text / pasting a word inline.
+	 */
+	function handleEditorPaste(e: ClipboardEvent) {
+		const blockEl = (e.target as HTMLElement).closest('[data-block-id]') as HTMLElement | null;
+		if (!blockEl) return; // zoomed title / capture zone / catcher → native
+		const blockId = blockEl.getAttribute('data-block-id');
+		if (!blockId) return;
+
+		const sel = window.getSelection();
+		if (sel && !sel.isCollapsed) return; // text-selection replace → native
+
+		let roots: PasteBlock[] | null = null;
+		const json = e.clipboardData?.getData(MIME_DIPLE);
+		if (json) roots = parseDipleJson(json);
+		if (!roots) {
+			// External text: multi-line pastes become blocks (one per line,
+			// leading tabs rebuild the hierarchy — Workflowy-style). A paste
+			// with no newline is treated as inline text and stays native.
+			const text = e.clipboardData?.getData('text/plain') ?? '';
+			if (text.includes('\n')) roots = parsePlainText(text);
+		}
+		if (!roots || roots.length === 0) return;
+
+		e.preventDefault();
+		const block = blocks.find((b) => b.id === blockId);
+		if (!block) return;
+		void pasteRoots(block.parent_id, block.position + 1, roots);
 	}
 
 	/**
@@ -1038,6 +1634,22 @@
 	async function handleSelectionAction(action: FormatAction) {
 		const selectedBlocks = flatBlocks.filter((b) => selectedIds.has(b.id));
 		if (selectedBlocks.length === 0) return;
+
+		if (action === 'copy') {
+			copySelectedBlocks();
+			// Close the menu but keep the visual selection (unlike cut/paste/delete,
+			// which mutate the tree and clear it).
+			selectionMenu = null;
+			return;
+		}
+		if (action === 'cut') {
+			await cutSelectedBlocks();
+			return;
+		}
+		if (action === 'paste') {
+			await pasteAtSelection();
+			return;
+		}
 
 		if (action === 'delete') {
 			// deleteSelectedBlocks clears the selection itself — clearing here first
@@ -1078,10 +1690,10 @@
 				return;
 		}
 
-		// Optimistic update + persist each block
+		// Optimistic update + persist each block (per-block rollback on failure)
 		for (let i = 0; i < selectedBlocks.length; i++) {
 			selectedBlocks[i].content = newContents[i];
-			apiUpdateContent(selectedBlocks[i].id, newContents[i]);
+			saveContentWithRollback(selectedBlocks[i].id, contents[i], newContents[i]);
 		}
 		blocks = [...blocks];
 		clearSelection();
@@ -1100,9 +1712,39 @@
 			target.tagName === 'INPUT' ||
 			target.tagName === 'TEXTAREA';
 
+		const cmd = keybindings[comboFromEvent(e)];
+
+		// Block-selection clipboard: only when blocks are selected AND no text is
+		// selected (native copy/cut/paste keeps working for text) AND we're not in
+		// a form field (palette). A collapsed caret inside a contenteditable still
+		// counts as block context — the native paste would be a no-op there.
+		if (cmd === 'edit.copy' || cmd === 'edit.cut' || cmd === 'edit.paste') {
+			const sel = window.getSelection();
+			const hasTextSelection = sel !== null && !sel.isCollapsed;
+			if (
+				selectedIds.size > 0 &&
+				!hasTextSelection &&
+				target.tagName !== 'INPUT' &&
+				target.tagName !== 'TEXTAREA'
+			) {
+				if (cmd === 'edit.paste') {
+					// Delegate to the hidden catcher textarea: the browser dispatches
+					// the native paste event on the focused element, and reading
+					// e.clipboardData needs NO clipboard-read permission. No
+					// preventDefault here — the paste must reach the catcher.
+					clipCatcherEl?.focus();
+					return;
+				}
+				e.preventDefault();
+				if (cmd === 'edit.copy') copySelectedBlocks();
+				else await cutSelectedBlocks();
+				return;
+			}
+			// Otherwise fall through — the browser handles it natively.
+		}
+
 		if (!inEditableField) {
 			// Resolve through the registry — no hardcoded keys, rebinding follows automatically
-			const cmd = keybindings[comboFromEvent(e)];
 			if (cmd === 'edit.undo') {
 				e.preventDefault();
 				await performUndo();
@@ -1139,6 +1781,32 @@
 		}
 	}
 
+	/**
+	 * Page teardown (refresh, tab close): the active edit is normally saved on
+	 * blur, but a quick reload right after typing never fires blur. Send the
+	 * in-progress content with a keepalive fetch — it survives the page being
+	 * torn down, unlike a regular fetch. Covers edited blocks and the zoomed
+	 * title (identified via [data-zoom-title]). Best-effort: if the request
+	 * can't be queued it's swallowed — blur remains the normal save path.
+	 */
+	function handleBeforeUnload() {
+		const active = document.activeElement as HTMLElement | null;
+		if (active?.getAttribute('contenteditable') !== 'true') return;
+
+		const blockEl = active.closest('[data-block-id]') as HTMLElement | null;
+		const zoomTitle = active.closest('[data-zoom-title]') as HTMLElement | null;
+		const id = blockEl?.getAttribute('data-block-id') ?? (zoomTitle ? effectiveZoomId : null);
+		if (!id) return;
+
+		const content = active.textContent ?? '';
+		void fetch(`/api/blocks/${id}`, {
+			method: 'PATCH',
+			keepalive: true,
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ content })
+		}).catch(() => undefined);
+	}
+
 	// --- Undo/redo handlers ---
 
 	/** Wait for in-flight structural ops to settle. Local SQLite round-trips are ms; the cap is pure safety. */
@@ -1166,13 +1834,25 @@
 	 * window listener. Selection is cleared first: an undo may delete a selected block,
 	 * which would otherwise leave a ghost id in selectedIds.
 	 */
+	/**
+	 * Replay an entry, surfacing API failures. A failed replay stops mid-entry —
+	 * remaining mutations never ran, so only a reload can resync the client.
+	 */
+	async function replayEntry(entry: UndoEntry, direction: 'undo' | 'redo') {
+		try {
+			await applyUndoEntry(entry, direction);
+		} catch {
+			showSyncError("Couldn't sync — please reload.");
+		}
+	}
+
 	async function performUndo() {
 		await waitForInflight();
 		if (inflight > 0) return;
 		clearSelection();
 		flushActiveEdit();
 		const entry = undoStack.undo();
-		if (entry) await applyUndoEntry(entry, 'undo');
+		if (entry) await replayEntry(entry, 'undo');
 	}
 	async function performRedo() {
 		await waitForInflight();
@@ -1180,7 +1860,7 @@
 		clearSelection();
 		flushActiveEdit();
 		const entry = undoStack.redo();
-		if (entry) await applyUndoEntry(entry, 'redo');
+		if (entry) await replayEntry(entry, 'redo');
 	}
 
 	async function handleUndo(e: KeyboardEvent, _block: Block) {
@@ -1203,6 +1883,13 @@
 		'block.moveDown': handleArrowDown,
 		'edit.undo': handleUndo,
 		'edit.redo': handleRedo,
+		// Clipboard commands are no-ops in edit mode: the native browser behavior
+		// must win there (text copy/cut/paste inside the contenteditable). Block
+		// selection copies are handled by onWindowKeydown, edit-mode diple pastes
+		// by handleEditorPaste.
+		'edit.copy': () => undefined,
+		'edit.cut': () => undefined,
+		'edit.paste': () => undefined,
 		'view.zoomIn': (e, block) => {
 			e.preventDefault();
 			if (!block.content.trim()) return; // no zoom into empty blocks
@@ -1220,17 +1907,18 @@
 <div
 	class="editor"
 	class:editor--selecting={dragActive}
-	class:editor--intro={props.intro ?? false}
+	class:editor--intro={intro ?? false}
 	bind:this={editorEl}
 	onclick={handleClickIntent}
 	onkeydown={handleEditorKeydown}
 	onmousedown={onEditorMousedown}
 	oncontextmenu={onEditorContextMenu}
+	onpaste={handleEditorPaste}
 >
 	{#if selRect}
 		<div class="selection-overlay" style="top: {selRect.top}px; height: {selRect.height}px;"></div>
 	{/if}
-	{#key zoomId ?? '__root__'}
+	{#key zoomTarget.id ?? '__root__'}
 		<div class="zoom-view">
 			{#if zoomedBlock && effectiveZoomId}
 				<ZoomHeader
@@ -1242,10 +1930,16 @@
 				/>
 			{/if}
 			{#if !effectiveZoomId && !captureZoneUsed}
-				<!-- Persistent capture zone at the top of root: click → new first block, cursor in it -->
+				<!-- Ghost block row — identical alignment and structure as a real block
+				     so the capture zone looks like "the first block" instead of a button.
+				     The diple chevron and text are both pale (encre 38%, currentColor). -->
 				<button class="capture-zone" onclick={handleCreateRootBlock}>
-					<span>Write anything…</span>
-					<span>Press Enter for another block</span>
+					<span class="cz-gutter" aria-hidden="true">
+						<span class="cz-spacer"></span>
+						<span class="cz-spacer"></span>
+						<span class="cz-bullet"><span class="cz-diple"></span></span>
+					</span>
+					<span class="cz-text">Write anything…</span>
 				</button>
 			{/if}
 			{#each rootBlocks as block, i (block.id)}
@@ -1259,6 +1953,7 @@
 						onSaveContent={handleSaveContent}
 						onToggleCollapse={handleToggleCollapse}
 						onZoom={handleZoom}
+						onClipboardAction={handleBlockClipboardAction}
 					/>
 				{:else}
 					<div class="intro-wrap" style="--i: {i}">
@@ -1271,6 +1966,7 @@
 							onSaveContent={handleSaveContent}
 							onToggleCollapse={handleToggleCollapse}
 							onZoom={handleZoom}
+							onClipboardAction={handleBlockClipboardAction}
 						/>
 					</div>
 				{/if}
@@ -1278,12 +1974,26 @@
 
 			{#if rootBlocks.length === 0 && effectiveZoomId}
 				<button class="capture-zone" onclick={handleCreateFirstChild}>
-					<span>Write anything…</span>
-					<span>Press Enter for another block</span>
+					<span class="cz-gutter" aria-hidden="true">
+						<span class="cz-spacer"></span>
+						<span class="cz-spacer"></span>
+						<span class="cz-bullet"><span class="cz-diple"></span></span>
+					</span>
+					<span class="cz-text">Write anything…</span>
 				</button>
 			{/if}
 		</div>
 	{/key}
+
+	<!-- Hidden catcher: receives native paste events when blocks are selected
+	     (see onWindowKeydown) so the clipboard can be read without the
+	     clipboard-read permission. Out of the layout, unfocusable by tab. -->
+	<textarea
+		class="clip-catcher"
+		tabindex="-1"
+		aria-hidden="true"
+		bind:this={clipCatcherEl}
+		onpaste={handleClipCatcherPaste}></textarea>
 </div>
 
 {#if selectionMenu}
@@ -1295,11 +2005,16 @@
 	/>
 {/if}
 
+{#if syncError}
+	<div class="sync-toast" role="alert">{syncError}</div>
+{/if}
+
 <svelte:window
 	onmousemove={onWindowMousemove}
 	onmouseup={onWindowMouseup}
 	onkeydown={onWindowKeydown}
 	onresize={measureSelection}
+	onbeforeunload={handleBeforeUnload}
 />
 
 <style>
@@ -1323,34 +2038,68 @@
 	.editor.editor--selecting * {
 		user-select: none !important;
 	}
-	/* Capture zone: a tall ghost block sitting where the next input will appear.
-	   Used at root (top of the list) and in empty zoomed views.
-	   Two-line hint, column-flex, generous hit target. */
+	/* Ghost block row: mirrors the metrics of a real block (.block, .block-row,
+	   .block-gutter, .diple) so the capture zone sits pixel-identical to a real
+	   block in the list.  Pale gray (encre 38%) signals it's a placeholder.
+	   Depth‑0 gutter hangs into the left margin via negative margin-left. */
 	.capture-zone {
 		display: flex;
-		flex-direction: column;
-		justify-content: center;
-		gap: 0.25rem;
-		width: 100%;
-		margin-top: 3rem;
-		margin-bottom: 1.25rem;
-		min-height: 5rem;
+		align-items: flex-start;
+		padding: 6px 0; /* match .block */
+		/* gutter: zoom-w 1.35rem + menu-w 1.35rem + bullet half = 3.45rem.
+		   Negative margin hangs the gutter left; expanded width compensates so the
+		   right edge stays flush with the content column (a <button> needs this
+		   explicitly — it doesn't auto-stretch like a <div>). */
+		width: calc(100% + 1.35rem + 1.35rem + 0.75rem);
+		margin-left: calc(-1 * (1.35rem + 1.35rem + 0.75rem));
 		border: none;
 		background: none;
 		font: inherit;
-		font-style: italic;
 		text-align: left;
 		cursor: text;
-		padding: 0.75rem 4px 0.75rem 0.75rem;
 		color: color-mix(in srgb, var(--color-encre) 38%, transparent);
-		border-radius: 8px;
-		transition:
-			background 0.15s ease,
-			color 0.15s ease;
+		transition: color 0.15s ease;
 	}
+	@media (max-width: 850px) {
+		.capture-zone {
+			margin-left: 0;
+			width: 100%;
+		}
+	}
+	/* No background fill on hover — the text simply brightens. */
 	.capture-zone:hover {
-		background: color-mix(in srgb, var(--color-encre) 6%, transparent);
 		color: color-mix(in srgb, var(--color-encre) 65%, transparent);
+	}
+	.cz-gutter {
+		flex-shrink: 0;
+		display: flex;
+		align-items: center;
+		height: calc(1.5em + 4px); /* match .block-gutter */
+	}
+	.cz-spacer {
+		flex-shrink: 0;
+		width: 1.35rem;
+	}
+	.cz-bullet {
+		flex-shrink: 0;
+		width: 1.5rem;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+	.cz-diple {
+		display: block;
+		width: 0.4em;
+		height: 0.4em;
+		border-right: 2px solid currentColor;
+		border-bottom: 2px solid currentColor;
+		transform: rotate(-45deg);
+	}
+	.cz-text {
+		flex: 1;
+		min-width: 0;
+		padding: 2px 4px; /* match .block-content */
+		line-height: 1.5em;
 	}
 	/* One-shot staggered entrance when the home hero docks into the top bar.
 	   --i is the root-block index, set inline by the each block above. */
@@ -1371,22 +2120,9 @@
 		}
 	}
 
-	/* --- Zoom animations --- */
+	/* --- Zoom animation ---
 
-	/* Out: scale down + fade before the view swaps. Applied to the current
-	   .zoom-view by animateZoom() — the element is destroyed on remount,
-	   so no cleanup is needed. */
-	@keyframes zoom-out {
-		to {
-			opacity: 0;
-			transform: scale(0.95);
-		}
-	}
-	:global(.zoom-view--out) {
-		animation: zoom-out 150ms ease forwards;
-	}
-
-	/* In: the new view appears with a brief scale + fade. Plays on each mount
+	   In: the new view appears with a brief scale + fade. Plays on each mount
 	   inside {#key zoomId} — the remounts IS the trigger. */
 	@keyframes zoom-in {
 		from {
@@ -1404,5 +2140,30 @@
 	/* No zoom-in on the initial page load — the intro stagger handles it. */
 	.editor--intro .zoom-view {
 		animation: none;
+	}
+
+	/* Sync failure toast: fixed so it survives scroll/zoom, above menus. */
+	.sync-toast {
+		position: fixed;
+		bottom: 1.5rem;
+		left: 50%;
+		transform: translateX(-50%);
+		padding: 0.5rem 1rem;
+		border-radius: 8px;
+		background: var(--color-encre);
+		color: var(--color-fond);
+		font-size: 0.875rem;
+		z-index: 100;
+	}
+	/* Paste catcher: fixed, off-screen, invisible — never in the layout, but
+	   focusable programmatically so the browser dispatches paste events to it. */
+	.clip-catcher {
+		position: fixed;
+		top: 0;
+		left: -9999px;
+		width: 1px;
+		height: 1px;
+		opacity: 0;
+		pointer-events: none;
 	}
 </style>

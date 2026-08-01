@@ -53,6 +53,62 @@ export function createBlock(params: {
 	};
 }
 
+/**
+ * Insert many blocks in one transaction. `blocks` must arrive parents-first
+ * (each child's parent already exists — FK constraint) and each sibling group
+ * must carry its FINAL positions (the client computes them before pasting).
+ *
+ * A single per-group shift makes room for all newcomers at once, then the
+ * blocks are inserted without re-shifting: a per-insert shift would reorder
+ * the pasted siblings (each new row would push the previous one aside).
+ * `collapsed` is honoured here, unlike createBlock which resets it to 0.
+ */
+export function createBlocksBatch(
+	blocks: {
+		id: string;
+		parent_id: string | null;
+		content: string;
+		position: number;
+		collapsed?: number;
+	}[]
+): void {
+	const db = getDb();
+
+	db.transaction(() => {
+		// Group sizes and earliest insert position per parent (one shift per group).
+		const groups = new Map<string | null, { count: number; minPos: number }>();
+		for (const b of blocks) {
+			const g = groups.get(b.parent_id);
+			if (g) {
+				g.count++;
+				g.minPos = Math.min(g.minPos, b.position);
+			} else {
+				groups.set(b.parent_id, { count: 1, minPos: b.position });
+			}
+		}
+
+		const shift = db.prepare(
+			'UPDATE blocks SET position = position + ? WHERE parent_id IS ? AND position >= ?'
+		);
+		for (const [parentId, g] of groups) {
+			shift.run(g.count, parentId, g.minPos);
+		}
+
+		const insert = db.prepare(
+			'INSERT INTO blocks (id, parent_id, content, position, created_at) VALUES (?, ?, ?, ?, ?)'
+		);
+		const fts = db.prepare('INSERT INTO blocks_fts (id, content) VALUES (?, ?)');
+		const markCollapsed = db.prepare('UPDATE blocks SET collapsed = 1 WHERE id = ?');
+		const created_at = Date.now();
+
+		for (const b of blocks) {
+			insert.run(b.id, b.parent_id, b.content, b.position, created_at);
+			fts.run(b.id, b.content);
+			if (b.collapsed === 1) markCollapsed.run(b.id);
+		}
+	})();
+}
+
 /** Update a block's content, keeping the FTS index in sync (same transaction). */
 export function updateBlock(id: string, content: string): void {
 	const db = getDb();
@@ -66,6 +122,20 @@ export function updateBlock(id: string, content: string): void {
 export function setCollapsed(id: string, collapsed: boolean): void {
 	const db = getDb();
 	db.prepare('UPDATE blocks SET collapsed = ? WHERE id = ?').run(collapsed ? 1 : 0, id);
+}
+
+/**
+ * Batch-set collapsed state for multiple blocks in a single transaction.
+ * Each item must have `id` and `collapsed` (0 | 1).
+ */
+export function setCollapsedBatch(items: { id: string; collapsed: number }[]): void {
+	const db = getDb();
+	const stmt = db.prepare('UPDATE blocks SET collapsed = ? WHERE id = ?');
+	db.transaction(() => {
+		for (const { id, collapsed } of items) {
+			stmt.run(collapsed, id);
+		}
+	})();
 }
 
 /**
@@ -168,11 +238,17 @@ function filterCondition(name: FilterName): { sql: string; params: number[] } {
 
 /**
  * Turn plain search terms into a safe FTS5 query. Each term becomes a quoted
- * phrase, which neutralizes FTS operators (colons, AND/OR/NEAR) that raw user
- * input would otherwise trigger. Space-joined phrases are an implicit AND.
+ * prefix phrase (appended with * when the term has >= 3 characters), which
+ * neutralises FTS operators (colons, AND/OR/NEAR) and enables partial matching
+ * ("janvi" matches "janvier"). Space-joined phrases are an implicit AND.
  */
 function toFtsQuery(terms: string[]): string {
-	return terms.map((t) => `"${t.replace(/"/g, '""')}"`).join(' ');
+	return terms
+		.map((t) => {
+			const safe = t.replace(/"/g, '""');
+			return t.length >= 3 ? `"${safe}"*` : `"${safe}"`;
+		})
+		.join(' ');
 }
 
 /**
@@ -208,20 +284,34 @@ export function searchBlocks(rawQuery: string): SearchResult[] {
 		const where = conditions.length > 0 ? `AND ${conditions.join(' AND ')}` : '';
 		rows = db
 			.prepare(
-				`SELECT b.* FROM blocks_fts f
+				`WITH RECURSIVE depths(id, depth) AS (
+					SELECT id, 0 FROM blocks WHERE parent_id IS NULL
+					UNION ALL
+					SELECT b.id, d.depth + 1
+					FROM blocks b JOIN depths d ON b.parent_id = d.id
+				)
+				SELECT b.* FROM blocks_fts f
 				 JOIN blocks b ON b.id = f.id
+				 JOIN depths d ON d.id = b.id
 				 WHERE blocks_fts MATCH ? ${where}
-				 ORDER BY rank
+				 ORDER BY d.depth ASC, rank ASC
 				 LIMIT ${SEARCH_LIMIT}`
 			)
 			.all(toFtsQuery(terms), ...params) as Block[];
 	} else {
-		// Filter-only query: nothing to match, list the newest matching blocks.
+		// Filter-only query: nothing to match, list the shallowest matching blocks first.
 		rows = db
 			.prepare(
-				`SELECT b.* FROM blocks b
+				`WITH RECURSIVE depths(id, depth) AS (
+					SELECT id, 0 FROM blocks WHERE parent_id IS NULL
+					UNION ALL
+					SELECT b.id, d.depth + 1
+					FROM blocks b JOIN depths d ON b.parent_id = d.id
+				)
+				SELECT b.* FROM blocks b
+				 JOIN depths d ON d.id = b.id
 				 WHERE ${conditions.join(' AND ')}
-				 ORDER BY b.created_at DESC
+				 ORDER BY d.depth ASC, b.created_at DESC
 				 LIMIT ${SEARCH_LIMIT}`
 			)
 			.all(...params) as Block[];

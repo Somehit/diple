@@ -4,6 +4,7 @@
 	import { caretFromClick } from '$lib/utils/caret';
 	import BlockRecursive from './Block.svelte';
 	import BlockMenu from './BlockMenu.svelte';
+	import type { FormatAction } from './FormatMenuItems.svelte';
 
 	let {
 		block,
@@ -13,7 +14,8 @@
 		onSaveContent,
 		autoEditRequest = null,
 		onToggleCollapse,
-		onZoom
+		onZoom,
+		onClipboardAction
 	}: {
 		block: Block;
 		childrenMap: Map<string | null, Block[]>;
@@ -23,9 +25,24 @@
 		autoEditRequest?: { id: string; caret: number } | null;
 		onToggleCollapse?: (id: string) => void;
 		onZoom?: (id: string) => void;
+		onClipboardAction?: (id: string, action: FormatAction) => void;
 	} = $props();
 
 	const children = $derived(childrenMap.get(block.id) ?? []);
+
+	/** Total descendants (children + grandchildren + …) — shown when collapsed. */
+	const descendantCount = $derived.by(() => {
+		let count = 0;
+		function walk(parentId: string) {
+			const kids = childrenMap.get(parentId) ?? [];
+			for (const kid of kids) {
+				count++;
+				walk(kid.id);
+			}
+		}
+		walk(block.id);
+		return count;
+	});
 
 	/** Derived from the parent's autoEditRequest — true when this block is the one that should enter edit mode. */
 	const autoEdit = $derived(autoEditRequest?.id === block.id);
@@ -94,7 +111,12 @@
 
 	function startEditing(e?: MouseEvent) {
 		capturedContent = block.content;
-		pendingCaret = caretFromClick(e, viewEl, block.content.length);
+		// The mousedown pre-computed the caret while the text was still
+		// selectable (before .editor applies user-select:none for the drag
+		// potential). Fall back to the click position for non-mouse entries.
+		if (pendingCaret === null) {
+			pendingCaret = caretFromClick(e, viewEl, block.content.length);
+		}
 		editing = true;
 	}
 
@@ -153,7 +175,7 @@
 				<!-- Formatting mid-edit would fight the capturedContent flow — spacer keeps alignment -->
 				<span class="menu-spacer" aria-hidden="true"></span>
 			{:else}
-				<BlockMenu {block} {onSaveContent} />
+				<BlockMenu {block} {onSaveContent} {onClipboardAction} />
 			{/if}
 			{#if children.length > 0}
 				<button
@@ -180,6 +202,13 @@
 				class:hidden={editing}
 				role="button"
 				tabindex="0"
+				/* Pre-compute the caret on mousedown: this local handler runs
+				   BEFORE .editor's mousedown adds editor--selecting
+				   (user-select: none), so caretPositionFromPoint still sees
+				   selectable text. The click then reuses this value. */
+				onmousedown={(e) => {
+					pendingCaret = caretFromClick(e, viewEl, block.content.length);
+				}}
 				onclick={(e) => {
 					if ((e.target as HTMLElement).tagName !== 'A') startEditing(e);
 				}}
@@ -200,8 +229,8 @@
 			></div>
 		</div>
 
-		{#if block.collapsed === 1 && children.length > 0}
-			<span class="child-count" aria-hidden="true">› {children.length}</span>
+		{#if block.collapsed === 1 && descendantCount > 0}
+			<span class="child-count" aria-hidden="true">› {descendantCount}</span>
 		{/if}
 	</div>
 
@@ -216,6 +245,7 @@
 					{onSaveContent}
 					{onToggleCollapse}
 					{onZoom}
+					{onClipboardAction}
 					{autoEditRequest}
 				/>
 			{/each}

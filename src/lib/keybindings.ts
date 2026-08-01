@@ -17,6 +17,9 @@ export type CommandId =
 	| 'block.moveDown'
 	| 'edit.undo'
 	| 'edit.redo'
+	| 'edit.copy'
+	| 'edit.cut'
+	| 'edit.paste'
 	| 'view.zoomIn'
 	| 'view.zoomOut';
 
@@ -34,6 +37,9 @@ export const keybindings: Record<string, CommandId> = {
 	'ctrl+z': 'edit.undo',
 	'ctrl+shift+z': 'edit.redo',
 	'ctrl+y': 'edit.redo',
+	'ctrl+c': 'edit.copy',
+	'ctrl+x': 'edit.cut',
+	'ctrl+v': 'edit.paste',
 	'alt+arrowright': 'view.zoomIn',
 	'alt+arrowleft': 'view.zoomOut'
 };

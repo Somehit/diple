@@ -1802,6 +1802,14 @@ add(
 // MAIN
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/**
+ * Ids of every block the seeder creates. A database holding ONLY these (or
+ * nothing at all) is considered fresh: the home hero is shown. One
+ * user-created block (random UUID, not in this set) and the hero never
+ * comes back. Built from `all` — stays in sync with the seed automatically.
+ */
+export const SEED_IDS: ReadonlySet<string> = new Set(all.map((b) => b.id));
+
 export function seed(): void {
 	const db = getDb();
 
@@ -1824,7 +1832,11 @@ export function seed(): void {
 	})();
 
 	console.log(`✅ Seed complete — ${count} blocks inserted.`);
-	closeDb();
 }
 
-seed();
+// CLI entry: when run directly via `npx tsx seed.ts`, close the DB after seeding.
+// When imported by initDb() in schema.ts, the caller manages the connection.
+if (process.argv[1]?.endsWith('seed.ts')) {
+	seed();
+	closeDb();
+}

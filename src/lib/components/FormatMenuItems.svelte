@@ -1,15 +1,33 @@
 <script lang="ts">
 	export type FormatAction =
-		'h1' | 'h2' | 'h3' | 'bold' | 'italic' | 'highlight' | 'strike' | 'code' | 'delete';
+		| 'h1'
+		| 'h2'
+		| 'h3'
+		| 'bold'
+		| 'italic'
+		| 'highlight'
+		| 'strike'
+		| 'code'
+		| 'copy'
+		| 'cut'
+		| 'paste'
+		| 'delete';
 
 	type Props = {
 		onApply: (action: FormatAction) => void;
+		showClipboard?: boolean;
 		showDelete?: boolean;
 	};
 
-	let { onApply, showDelete = false }: Props = $props();
+	let { onApply, showClipboard = true, showDelete = false }: Props = $props();
 </script>
 
+{#if showClipboard}
+	<button class="menu-item" onclick={() => onApply('copy')}>Copier</button>
+	<button class="menu-item" onclick={() => onApply('cut')}>Couper</button>
+	<button class="menu-item" onclick={() => onApply('paste')}>Coller</button>
+	<hr class="menu-divider" />
+{/if}
 <button class="menu-item" onclick={() => onApply('h1')}>Titre 1</button>
 <button class="menu-item" onclick={() => onApply('h2')}>Titre 2</button>
 <button class="menu-item" onclick={() => onApply('h3')}>Titre 3</button>
