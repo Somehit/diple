@@ -2,6 +2,7 @@
 	import type { Block } from '$lib/server/db/queries';
 	import { renderMarkdown } from '$lib/utils/markdown';
 	import { caretFromClick } from '$lib/utils/caret';
+	import { t } from '$lib/i18n.svelte';
 
 	let {
 		block,
@@ -31,7 +32,7 @@
 
 	function startEditing(e?: MouseEvent) {
 		capturedContent = block.content;
-		pendingCaret = caretFromClick(e, viewEl, block.content.length);
+		pendingCaret = caretFromClick(e, viewEl, block.content);
 		editing = true;
 	}
 
@@ -75,13 +76,13 @@
 
 	const crumbs = $derived.by(() => {
 		type Crumb = { id: string | null; label: string; kind: 'home' | 'ellipsis' | 'ancestor' };
-		const list: Crumb[] = [{ id: null, label: 'Home', kind: 'home' }];
+		const list: Crumb[] = [{ id: null, label: t('zoom.home'), kind: 'home' }];
 
 		if (path.length <= 3) {
 			for (const p of path) {
 				list.push({
 					id: p.id,
-					label: p.content || '(empty)',
+					label: p.content || t('common.empty'),
 					kind: 'ancestor'
 				});
 			}
@@ -90,7 +91,7 @@
 			for (const p of path.slice(-3)) {
 				list.push({
 					id: p.id,
-					label: p.content || '(empty)',
+					label: p.content || t('common.empty'),
 					kind: 'ancestor'
 				});
 			}
@@ -100,7 +101,7 @@
 	});
 </script>
 
-<nav class="crumbs" aria-label="Breadcrumb">
+<nav class="crumbs" aria-label={t('zoom.breadcrumb')}>
 	{#each crumbs as crumb, i (crumb.kind === 'ancestor' ? `ancestor:${crumb.id}` : crumb.kind)}
 		{#if i > 0}
 			<span class="sep" aria-hidden="true">›</span>
@@ -135,7 +136,7 @@
 		{#if block.content}
 			{@html renderMarkdown(block.content)}
 		{:else}
-			<span class="empty">(empty)</span>
+			<span class="empty">{t('common.empty')}</span>
 		{/if}
 	</span>
 
@@ -166,9 +167,10 @@
 		flex-wrap: wrap;
 		/* Sticky context bar: parent is .zoom-view (full content height), so it
 		   sticks under the navbar while children scroll. Blur band matches the
-		   navbar aesthetic; horizontal bleed keeps text off the blur edges. */
+		   navbar aesthetic; horizontal bleed keeps text off the blur edges.
+		   top: var(--navbar-h) — taller in the narrow two-row layout. */
 		position: sticky;
-		top: 4.5rem;
+		top: var(--navbar-h);
 		z-index: 40;
 		padding: 0.375rem 0.25rem;
 		margin: 0 -0.25rem 0.5rem;

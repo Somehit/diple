@@ -1,13 +1,16 @@
 @import 'tailwindcss';
 @import '@fontsource/inter/400.css';
 @import '@fontsource/inter/700.css';
+@import '@fontsource/noto-serif/400.css';
 @import '@fontsource/noto-serif/600.css';
+@import '@fontsource/noto-serif/700.css';
 
 @theme {
 	--font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
 	--font-serif: 'Noto Serif', Georgia, serif;
 
-	/* Palette */
+	/* Palette (light is the default; the dark variant lives in @layer base,
+	   switched by data-theme / prefers-color-scheme) */
 	--color-fond: #faf9f6;
 	--color-encre: #1e1b16;
 	--color-accent: #e0862a;
@@ -20,25 +23,126 @@
 		/* Single source of truth for the content column width —
 		   search pill, editor, and palette results share it. */
 		--content-w: 720px;
+
+		/* Appearance knobs — read by body (font-size/font-family). Only the
+		   non-default values get [data-*] rules below, so the defaults here
+		   are what a fresh user gets. */
+		--font-size: 1.125rem;
+		--font-body: var(--font-sans);
+
+		/* Accent hover highlight (palette selected row, text selection).
+		   Overridden per theme below: on a light background 14% accent is a
+		   clean pale orange band, but on near-black it collapses into an
+		   almost-invisible dirty brown — the same % must go up as the
+		   background goes dark. */
+		--color-hover: color-mix(in srgb, var(--color-accent) 14%, transparent);
+
+		/* Pill height — the navbar layout derives from it (actions row
+		   offset, total navbar clearance). One knob. */
+		--pill-h: 60px;
+
 		/*
-		 * Right help panel width — shared by HelpPanel (panel width) and
-		 * Navbar (button offsets + pill re-centring, via calc). One knob.
+		 * Navbar vertical clearance — how far content must sit below the
+		 * viewport top so the navbar never covers it. Used by the main
+		 * padding, the sticky breadcrumbs, and the editor's zoom scroll.
+		 * Wide: pill + its top padding. Narrow: pill + actions row + gap.
 		 */
+		--navbar-h: 4.5rem;
+
+		/* Top offset of the floating action buttons (hamburger + corner
+		   cluster). Wide: same row as the pill. Narrow: second row below. */
+		--actions-row-top: 1rem;
+
+		/* Right help panel width — HelpPanel only (the navbar no longer
+		   computes offsets from it). One knob. */
 		--help-w: 300px;
 	}
 
-	@media (max-width: 600px) {
+	/*
+	 * Dark palette — Evernote-inspired: near-black charcoal paper, warm
+	 * off-white ink, accent brightened (the light-theme orange is too dim
+	 * on dark). Switched by data-theme (set from settings.svelte.ts);
+	 * 'system' follows the OS via prefers-color-scheme. Duplicated inside
+	 * the media query because CSS can't group them — keep in sync.
+	 */
+	:root[data-theme='dark'] {
+		--color-fond: #1b1a18;
+		--color-encre: #e2e0dc;
+		--color-accent: #f0a04e;
+		--color-erreur: #e05a45;
+		/* Stronger on dark: 25% of the brightened accent reads as a warm
+		   amber band (the app's text ::selection sits at 30%). */
+		--color-hover: color-mix(in srgb, var(--color-accent) 25%, transparent);
+	}
+	@media (prefers-color-scheme: dark) {
+		:root[data-theme='system'] {
+			--color-fond: #1b1a18;
+			--color-encre: #e2e0dc;
+			--color-accent: #f0a04e;
+			--color-erreur: #e05a45;
+			--color-hover: color-mix(in srgb, var(--color-accent) 25%, transparent);
+		}
+	}
+
+	/*
+	 * Appearance settings. Only non-default values get a rule: with no
+	 * rule, the :root defaults above (and the narrow-layout media query
+	 * for --content-w) apply untouched. Settings.svelte.ts always sets the
+	 * attribute, so the CSS stays additive and predictable.
+	 */
+	:root[data-font-size='small'] {
+		--font-size: 1rem;
+	}
+	:root[data-font-size='large'] {
+		--font-size: 1.3rem;
+	}
+	:root[data-font='serif'] {
+		--font-body: var(--font-serif);
+	}
+	:root[data-font='mono'] {
+		--font-body: ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
+	}
+	:root[data-content-width='narrow'] {
+		--content-w: 560px;
+	}
+	:root[data-content-width='wide'] {
+		--content-w: 880px;
+	}
+
+	/*
+	 * Narrow layout (< 1024px): the search pill (720px max) can no longer
+	 * share its row with the hamburger and the corner cluster — measured
+	 * collision point ~984px, 1024 keeps margin. Pill on row 1, action
+	 * buttons on row 2, side panels become drawers (Sidebar/HelpPanel).
+	 * Media queries can't read CSS vars, so 1023px appears in each
+	 * component too — keep them in sync.
+	 */
+	@media (max-width: 1023px) {
 		:root {
-			--help-w: 220px;
+			/* 0.875rem top pad + pill + 0.5rem gap + 36px buttons + 0.75rem
+			   bottom breath ≈ 8.125rem. */
+			--navbar-h: calc(0.875rem + var(--pill-h) + 0.5rem + 36px + 0.75rem);
+			--actions-row-top: calc(0.875rem + var(--pill-h) + 0.5rem);
+			--help-w: min(84vw, 320px);
+			/* Sidebar drawer width — shared so both drawers match. */
+			--drawer-w: min(84vw, 320px);
+			/* Content column on narrow screens: the 720px cap wastes too much
+			   width on tablets/small windows (centered → huge side margins).
+			   Widened to fill the viewport up to 860px — pill, editor and
+			   palette results stay aligned (they all read this var). */
+			--content-w: min(calc(100vw - 2rem), 860px);
 		}
 	}
 
 	body {
-		font-size: 1.125rem;
+		font-size: var(--font-size);
+		font-family: var(--font-body);
 		background: var(--color-fond);
 		color: var(--color-encre);
 		caret-color: var(--color-accent);
-		color-scheme: light;
+		/* Native UI (scrollbars, inputs) is themed by the store via an
+		   inline color-scheme on <html> — body inherits it, so nothing is
+		   hardcoded here. */
 	}
 
 	::selection {

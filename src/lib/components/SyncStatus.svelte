@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { sync } from '$lib/sync.svelte';
+	import { settings } from '$lib/settings.svelte';
+	import { t } from '$lib/i18n.svelte';
 
 	/**
 	 * Discreet sync-status dot (top-right corner cluster) + hover popover.
@@ -10,11 +12,12 @@
 
 	let hovered = $state(false);
 
-	/** "31/07/2026, 22:02:04 GMT-4" — dd/MM/yyyy + hh:mm:ss + tz abbreviation. */
+	/** "31/07/2026, 22:02:04 GMT-4" — dd/MM/yyyy + hh:mm:ss + tz abbreviation.
+	 *  Locale follows the interface language. */
 	const lastChangeLabel = $derived(
 		sync.lastChange === null
-			? 'Never'
-			: new Date(sync.lastChange).toLocaleString('en-GB', {
+			? t('sync.never')
+			: new Date(sync.lastChange).toLocaleString(settings.lang === 'fr' ? 'fr-FR' : 'en-GB', {
 					day: '2-digit',
 					month: '2-digit',
 					year: 'numeric',
@@ -28,9 +31,9 @@
 	const statusLabel = $derived(
 		sync.online
 			? sync.pendingLocal > 0
-				? `Sync: syncing (${sync.pendingLocal} pending)`
-				: 'Sync: online'
-			: 'Sync: offline'
+				? t('sync.syncing', { n: sync.pendingLocal })
+				: t('sync.online')
+			: t('sync.offline')
 	);
 
 	async function ping() {
@@ -73,10 +76,13 @@
 
 	{#if hovered}
 		<div class="tooltip" role="tooltip">
-			<p class="title">Diple is <strong>{sync.online ? 'online' : 'offline'}</strong></p>
-			<p class="row"><strong>{sync.pendingLocal}</strong> pending local changes</p>
-			<p class="row"><strong>{sync.pendingRemote}</strong> pending remote changes</p>
-			<p class="last-label">Last change in server:</p>
+			<p class="title">
+				{t('sync.isOnline')}
+				<strong>{sync.online ? t('sync.onlineWord') : t('sync.offlineWord')}</strong>
+			</p>
+			<p class="row">{t('sync.pendingLocal', { n: sync.pendingLocal })}</p>
+			<p class="row">{t('sync.pendingRemote', { n: sync.pendingRemote })}</p>
+			<p class="last-label">{t('sync.lastChange')}</p>
 			<p class="last-value">{lastChangeLabel}</p>
 		</div>
 	{/if}

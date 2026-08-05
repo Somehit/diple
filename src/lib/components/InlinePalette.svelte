@@ -1,6 +1,7 @@
 <script lang="ts">
 	import SearchPill from './SearchPill.svelte';
 	import { matchCommands } from '$lib/commands';
+	import { t } from '$lib/i18n.svelte';
 	import type { SearchResult } from '$lib/server/db/queries';
 	import { zoomTo } from '$lib/zoom.svelte';
 	import { loadRecents, pushRecent, removeRecent, type RecentEntry } from '$lib/recent';
@@ -45,8 +46,8 @@
 	});
 
 	function sectionOf(item: Item): string {
-		if (item.kind === 'command') return 'Commands';
-		return item.recent ? 'Recent' : 'Blocks';
+		if (item.kind === 'command') return t('palette.commands');
+		return item.recent ? t('palette.recent') : t('palette.blocks');
 	}
 
 	// --- Fetch results on query change (debounced) ---
@@ -218,7 +219,7 @@
 			role="combobox"
 			aria-expanded={focused && items.length > 0}
 			aria-controls="search-results"
-			placeholder="Search blocks or type a command… (:root, :leaves, :branches, :today)"
+			placeholder={t('palette.placeholder')}
 			onfocus={onFocus}
 			onblur={onBlur}
 			onkeydown={onKeydown}

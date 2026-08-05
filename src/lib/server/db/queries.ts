@@ -186,6 +186,23 @@ export function moveBlock(
 			Block | undefined;
 		if (!block) return;
 
+		// Cycle guard: a block must never be moved inside its own subtree (its
+		// ancestor chain would loop and the tree invariants would break).
+		// Keyboard moves (Tab/Shift-Tab) shift one level at a time and can't
+		// create a cycle; a drag & drop can aim at a descendant — the client
+		// rejects that target, and the server enforces the invariant here as
+		// defense in depth. Silent no-op, same convention as the missing-block
+		// check above.
+		let cursor = params.parent_id;
+		const seen = new Set<string>();
+		while (cursor && !seen.has(cursor)) {
+			if (cursor === id) return;
+			seen.add(cursor);
+			const parent = db.prepare('SELECT parent_id FROM blocks WHERE id = ?').get(cursor) as
+				{ parent_id: string | null } | undefined;
+			cursor = parent?.parent_id ?? null;
+		}
+
 		// Close gap at old position
 		db.prepare(
 			'UPDATE blocks SET position = position - 1 WHERE parent_id IS ? AND position > ?'

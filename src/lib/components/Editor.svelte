@@ -15,7 +15,8 @@
 		applyMultiStrikethrough,
 		applyMultiCode
 	} from '$lib/utils/format';
-	import { keybindings, comboFromEvent, type CommandId } from '$lib/keybindings';
+	import { comboFromEvent, type CommandId } from '$lib/keybindings';
+	import { effectiveKeybindings } from '$lib/keybindings.svelte';
 	import { UndoStack } from '$lib/undo';
 	import type { Mutation, UndoEntry } from '$lib/undo';
 	import {
@@ -40,6 +41,8 @@
 		type PasteBlock
 	} from '$lib/clipboard';
 	import { syncBegin, syncCommit, syncFail } from '$lib/sync.svelte';
+	import { t } from '$lib/i18n.svelte';
+	import { computeDropTarget, type DropTarget, type DropCtx } from '$lib/drop-target';
 
 	let {
 		blocks: initialBlocks,
@@ -112,10 +115,18 @@
 
 	let scrollFirstRun = true;
 
+	/** Navbar clearance in px — reads --navbar-h (layout.css). Wide: "4.5rem",
+	 *  narrow: a px-resolved calc(). Rem→px conversion covers the wide case. */
+	function navbarClearance(): number {
+		const raw = getComputedStyle(document.documentElement).getPropertyValue('--navbar-h').trim();
+		const px = raw.endsWith('rem') ? parseFloat(raw) * 16 : parseFloat(raw);
+		return Number.isFinite(px) ? px : 72;
+	}
+
 	function scrollToEditorTop() {
 		if (!editorEl) return;
 		const rect = editorEl.getBoundingClientRect();
-		const y = rect.top + window.scrollY - 72; // navbar clearance (pill height + gap)
+		const y = rect.top + window.scrollY - navbarClearance();
 		window.scrollTo({ top: Math.max(0, y) });
 	}
 
@@ -178,8 +189,95 @@
 	let dragAnchorId: string | null = null;
 	let editorEl: HTMLDivElement | undefined = $state();
 
+	// Drag & drop (native HTML5): the diple starts it, the editor computes the
+	// drop target and applies the move. dragRoots is non-empty only while a
+	// drag is in flight.
+	let dragRoots = $state<string[]>([]);
+	let dropTarget = $state<DropTarget | null>(null);
+	let dragImageEl: HTMLElement | null = null;
+	let indentStepPx = 16;
+	let expandTimer: ReturnType<typeof setTimeout> | undefined;
+	let expandTimerId: string | null = null;
+	let dragLeaveDepth = 0;
+
 	// Position of the auto-open format menu (null = closed). Set on mouseup after a drag.
 	let selectionMenu = $state<{ x: number; y: number } | null>(null);
+
+	// --- Touch long-press (mobile) ---
+	// Explicit timer — we don't rely on the browser's long-press → contextmenu
+	// synthesis (unreliable on iOS text). On fire it opens the same SelectionMenu
+	// as right-click; two flags neutralise the native side effects that follow:
+	// the browser's own contextmenu (Android) and the click synthesized on finger
+	// release (which would hit the menu's backdrop and close it).
+	let longPressTimer: ReturnType<typeof setTimeout> | null = null;
+	let longPressStart: { x: number; y: number; id: string } | null = null;
+	let suppressMenuUntil = 0;
+	let suppressNextClick = false;
+
+	function clearLongPress() {
+		if (longPressTimer) clearTimeout(longPressTimer);
+		longPressTimer = null;
+		longPressStart = null;
+	}
+
+	function openTouchMenu(id: string, x: number, y: number) {
+		clearLongPress();
+		// Same path as right-click: the block becomes the sole selection.
+		selectedIds = new Set([id]);
+		selectionMenu = { x, y };
+		// Swallow the browser's native contextmenu that follows a long-press
+		// (Android) so it can't open a second menu.
+		suppressMenuUntil = Date.now() + 1500;
+		// Swallow the click synthesized on finger release — it would land on the
+		// menu's backdrop and close the menu before the user picks an action.
+		suppressNextClick = true;
+	}
+
+	/**
+	 * Touch pointer press on a block: arm the 500ms long-press timer.
+	 * Excluded: edit surfaces (contenteditable), links, and buttons (bullet,
+	 * collapse) — those have their own tap behaviour.
+	 */
+	function onEditorPointerDown(e: PointerEvent) {
+		if (e.pointerType !== 'touch') return;
+		if ((e.target as HTMLElement).closest('[contenteditable="true"], button, a, input, textarea'))
+			return;
+		const blockEl = (e.target as HTMLElement).closest('[data-block-id]') as HTMLElement | null;
+		const id = blockEl?.getAttribute('data-block-id');
+		if (!id) return;
+		clearLongPress();
+		longPressStart = { x: e.clientX, y: e.clientY, id };
+		longPressTimer = setTimeout(() => openTouchMenu(id, e.clientX, e.clientY), 500);
+	}
+
+	/** Any new touch press cancels the post-long-press click suppression. */
+	function onWindowPointerDown() {
+		suppressNextClick = false;
+	}
+
+	/** Finger moved > 12px = scroll intent, not a long-press. */
+	function onWindowPointerMove(e: PointerEvent) {
+		if (e.pointerType !== 'touch' || !longPressTimer || !longPressStart) return;
+		const dx = e.clientX - longPressStart.x;
+		const dy = e.clientY - longPressStart.y;
+		if (dx * dx + dy * dy > 144) clearLongPress();
+	}
+
+	function onWindowPointerEnd(e: PointerEvent) {
+		if (e.pointerType !== 'touch') return;
+		clearLongPress();
+	}
+
+	/** Window-level capture: swallow the click synthesized after a long-press
+	 *  release — it would otherwise land on the open menu's backdrop and close
+	 *  it. Cleared by the next pointer press (onWindowPointerDown). */
+	function onWindowClickCapture(e: MouseEvent) {
+		if (suppressNextClick) {
+			suppressNextClick = false;
+			e.preventDefault();
+			e.stopPropagation();
+		}
+	}
 
 	// Hidden textarea that receives native paste events when blocks are selected
 	// (see onWindowKeydown) — reading e.clipboardData needs no permission.
@@ -288,6 +386,17 @@
 	// State reads happen inside measureSelection — tracked through the call.
 	$effect(() => {
 		measureSelection();
+	});
+
+	/**
+	 * Drop indicator position relative to .editor. Re-computed on every
+	 * dragover (dropTarget is a fresh object each time), so the editor rect is
+	 * always current — same pattern as the selection overlay.
+	 */
+	const indicatorPos = $derived.by(() => {
+		if (!dropTarget || !editorEl) return null;
+		const r = editorEl.getBoundingClientRect();
+		return { top: dropTarget.indicatorY - r.top, left: dropTarget.indicatorX - r.left };
 	});
 
 	// Sync bindable props to parent so the page/Navbar can read them.
@@ -412,9 +521,9 @@
 			if (blk && blk.content === after) {
 				blk.content = before;
 				blocks = [...blocks];
-				showSyncError("Couldn't save — change reverted.");
+				showSyncError(t('editor.errReverted'));
 			} else {
-				showSyncError("Couldn't save — kept locally, will retry on next edit.");
+				showSyncError(t('editor.errKept'));
 			}
 		}
 	}
@@ -433,7 +542,7 @@
 				block.collapsed = applied ? 0 : 1;
 				blocks = [...blocks];
 			}
-			showSyncError("Couldn't save — change reverted.");
+			showSyncError(t('editor.errReverted'));
 		});
 	}
 
@@ -497,7 +606,7 @@
 		}
 		if (items.length === 0) return;
 		blocks = [...blocks];
-		apiSetCollapsedBatch(items).catch(() => showSyncError("Couldn't save collapse state."));
+		apiSetCollapsedBatch(items).catch(() => showSyncError(t('editor.errCollapse')));
 	}
 
 	function handleRevealAll() {
@@ -512,7 +621,7 @@
 		}
 		if (items.length === 0) return;
 		blocks = [...blocks];
-		apiSetCollapsedBatch(items).catch(() => showSyncError("Couldn't save reveal state."));
+		apiSetCollapsedBatch(items).catch(() => showSyncError(t('editor.errReveal')));
 	}
 
 	/**
@@ -604,7 +713,7 @@
 		} catch {
 			removeBlockLocal(newBlock);
 			if (autoEditRequest?.id === newBlock.id) autoEditRequest = null;
-			showSyncError("Couldn't save — change reverted.");
+			showSyncError(t('editor.errReverted'));
 		} finally {
 			inflight--;
 		}
@@ -642,7 +751,7 @@
 		} catch {
 			removeBlockLocal(newBlock);
 			if (autoEditRequest?.id === newBlock.id) autoEditRequest = null;
-			showSyncError("Couldn't save — change reverted.");
+			showSyncError(t('editor.errReverted'));
 		} finally {
 			inflight--;
 		}
@@ -812,7 +921,7 @@
 		if (!block) return;
 
 		// Normalize key combo → command ID → dispatch to handler
-		const cmd = keybindings[comboFromEvent(e)];
+		const cmd = effectiveKeybindings()[comboFromEvent(e)];
 		if (cmd) commands[cmd]?.(e, block);
 	}
 
@@ -882,7 +991,7 @@
 			} catch {
 				removeBlockLocal(newBlock);
 				if (autoEditRequest?.id === newBlock.id) autoEditRequest = null;
-				showSyncError("Couldn't save — change reverted.");
+				showSyncError(t('editor.errReverted'));
 			} finally {
 				inflight--;
 			}
@@ -952,7 +1061,7 @@
 				el.textContent = text;
 			}
 			if (autoEditRequest?.id === newBlock.id) autoEditRequest = null;
-			showSyncError("Couldn't save — change reverted.");
+			showSyncError(t('editor.errReverted'));
 		} finally {
 			inflight--;
 		}
@@ -989,7 +1098,7 @@
 			return true;
 		} catch {
 			moveBlockLocal(block, from.parent_id, from.position);
-			showSyncError("Couldn't save — change reverted.");
+			showSyncError(t('editor.errReverted'));
 			return false;
 		}
 	}
@@ -1033,7 +1142,7 @@
 			return true;
 		} catch {
 			moveBlockLocal(block, from.parent_id, from.position);
-			showSyncError("Couldn't save — change reverted.");
+			showSyncError(t('editor.errReverted'));
 			return false;
 		}
 	}
@@ -1141,7 +1250,7 @@
 				await apiDelete(block.id);
 			} catch {
 				insertBlockLocal(block);
-				showSyncError("Couldn't save — change reverted.");
+				showSyncError(t('editor.errReverted'));
 				return;
 			}
 
@@ -1177,7 +1286,7 @@
 						await apiDelete(prev.id);
 					} catch {
 						insertBlockLocal(prev);
-						showSyncError("Couldn't save — change reverted.");
+						showSyncError(t('editor.errReverted'));
 						return;
 					}
 					recordEntry(
@@ -1246,6 +1355,9 @@
 		if ((e.target as HTMLElement).closest('[contenteditable="true"]')) return;
 		// Don't interfere with button clicks (bullet toggle, menu)
 		if ((e.target as HTMLElement).closest('button')) return;
+		// Don't interfere with the diple — it's the drag handle, and the native
+		// drag & drop takes the gesture over (no selection-drag from here).
+		if ((e.target as HTMLElement).closest('.bullet')) return;
 
 		const blockEl = (e.target as HTMLElement).closest('[data-block-id]') as HTMLElement | null;
 		if (!blockEl) return;
@@ -1290,18 +1402,14 @@
 		dragPotential = false;
 		dragActive = false;
 		editorEl?.classList.remove('editor--selecting');
-		// The drag may leave a native text selection behind in some browsers
-		// when user-select:none is removed — clean it so only the block
-		// selection overlay remains.
-		window.getSelection()?.removeAllRanges();
+		// No removeAllRanges here: a text caret is a collapsed selection, and
+		// wiping it on every mouseup would erase the caret of a contenteditable
+		// being edited. The user-select:none class (added on mousedown) already
+		// prevents text selections from forming during a block drag.
 	}
 
 	/** Compute the range between the anchor and the block under the cursor, in flatBlocks order. */
 	function updateDragSelection(e: MouseEvent) {
-		// Block selection and text selection must never coexist: kill any text
-		// selection on every update (e.g. one started inside an edited block).
-		window.getSelection()?.removeAllRanges();
-
 		const blockEl = document
 			.elementFromPoint(e.clientX, e.clientY)
 			?.closest('[data-block-id]') as HTMLElement | null;
@@ -1319,6 +1427,224 @@
 		selectedIds = new Set(flatBlocks.slice(lo, hi + 1).map((b) => b.id));
 	}
 
+	// --- Drag & drop (native HTML5, initiated from the diple) ---
+
+	/**
+	 * Called from the bullet's dragstart (Block.svelte). Snapshots the dragged
+	 * roots ONCE: a block inside an active selection drags the whole selection
+	 * (its top-level roots, flat order — Workflowy behavior). The custom drag
+	 * image replaces the tiny diple snapshot the browser would otherwise use.
+	 */
+	function handleDragStart(id: string, e: DragEvent) {
+		// Block.svelte already guards dataTransfer in its own dragstart handler;
+		// this guard satisfies TS strict (nullable dataTransfer).
+		if (!e.dataTransfer) return;
+		dragRoots = selectedIds.has(id) ? topLevelSelectedIds() : [id];
+		selectionMenu = null;
+		cancelExpandTimer();
+		dropTarget = null;
+		indentStepPx = measureIndentStep();
+		const blk = blocks.find((b) => b.id === id);
+		const label =
+			dragRoots.length > 1
+				? t('editor.points', { n: dragRoots.length })
+				: blk?.content.trim() || '…';
+		e.dataTransfer.setDragImage(buildDragImage(label), 12, 12);
+	}
+
+	/** A pill with the dragged content — the native ghost would be a bare diple. */
+	function buildDragImage(label: string): HTMLElement {
+		const el = document.createElement('div');
+		el.style.cssText =
+			'position:absolute;left:-9999px;top:0;background:var(--color-surface);' +
+			'border:1px solid color-mix(in srgb, var(--color-encre) 15%, transparent);' +
+			'border-radius:6px;padding:4px 10px;box-shadow:0 4px 12px rgba(0,0,0,0.15);' +
+			'font-size:0.875rem;color:var(--color-encre);max-width:240px;' +
+			'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+		el.textContent = label;
+		document.body.appendChild(el);
+		dragImageEl = el;
+		return el;
+	}
+
+	/** 1rem of indent, measured from two rendered depths — fallback 16px. */
+	function measureIndentStep(): number {
+		const left = (depth: number) =>
+			document.querySelector(`[data-depth="${depth}"] .block-content-wrap`)?.getBoundingClientRect()
+				.left;
+		const l0 = left(0);
+		const l1 = left(1);
+		const l2 = left(2);
+		if (l0 !== undefined && l1 !== undefined) return l1 - l0;
+		if (l1 !== undefined && l2 !== undefined) return l2 - l1;
+		return 16;
+	}
+
+	/** Geometry helpers the drop-target module reads (viewport px). */
+	function blockRowRect(id: string): { top: number; bottom: number } | null {
+		const el = document.querySelector(`[data-block-id="${id}"]`);
+		const row = el?.querySelector(':scope > .block-row') ?? el;
+		const r = row?.getBoundingClientRect();
+		return r ? { top: r.top, bottom: r.bottom } : null;
+	}
+	/** The content column, not the gutter — .block-content-wrap is always visible
+	 *  (the view span hides while its block is being edited). */
+	function contentLeftOf(id: string): number | null {
+		const el = document.querySelector(`[data-block-id="${id}"] .block-content-wrap`);
+		const r = el?.getBoundingClientRect();
+		return r ? r.left : null;
+	}
+
+	function dropCtx(): DropCtx {
+		return {
+			blocks,
+			flatBlocks,
+			childrenMap,
+			dragRootIds: new Set(dragRoots),
+			minDepth: effectiveZoomId ? 1 : 0,
+			indentStepPx,
+			getRowRect: blockRowRect,
+			contentLeftOf
+		};
+	}
+
+	function handleDragOver(e: DragEvent) {
+		if (dragRoots.length === 0 || !e.dataTransfer) return; // foreign drags keep their own behavior
+		const target = computeDropTarget(e.clientX, e.clientY, dropCtx());
+		dropTarget = target;
+		if (target) {
+			// preventDefault marks the editor as a drop target; without it the
+			// browser shows the no-drop cursor and no drop event fires.
+			e.preventDefault();
+			e.dataTransfer.dropEffect = 'move';
+			scheduleAutoExpand(target);
+		} else {
+			cancelExpandTimer();
+		}
+	}
+
+	/**
+	 * The drop lands inside a collapsed block — expand it after a short dwell
+	 * so the user sees where it will land (Workflowy behavior). Only when the
+	 * collapsed block is the drop PARENT (child insertion); a same-level drop
+	 * beside it needs no expansion.
+	 */
+	function scheduleAutoExpand(target: DropTarget) {
+		const parent = target.parentId ? blocks.find((b) => b.id === target.parentId) : undefined;
+		if (parent && parent.collapsed === 1 && (childrenMap.get(parent.id)?.length ?? 0) > 0) {
+			if (expandTimerId !== parent.id) {
+				cancelExpandTimer();
+				expandTimerId = parent.id;
+				expandTimer = setTimeout(() => expandBlock(parent.id), 600);
+			}
+		} else {
+			cancelExpandTimer();
+		}
+	}
+
+	function cancelExpandTimer() {
+		if (expandTimer) {
+			clearTimeout(expandTimer);
+			expandTimer = undefined;
+			expandTimerId = null;
+		}
+	}
+
+	/** Optimistic expand with rollback — mirrors handleToggleCollapse. */
+	function expandBlock(id: string) {
+		const blk = blocks.find((b) => b.id === id);
+		if (!blk || blk.collapsed === 0) return;
+		blk.collapsed = 0;
+		blocks = [...blocks];
+		apiSetCollapsed(id, false).catch(() => {
+			if (blk.collapsed === 0) {
+				blk.collapsed = 1;
+				blocks = [...blocks];
+			}
+			showSyncError(t('editor.errReverted'));
+		});
+	}
+
+	async function handleDrop(e: DragEvent) {
+		e.preventDefault();
+		if (dragRoots.length === 0 || !dropTarget) return;
+		const target = dropTarget;
+		dropTarget = null;
+		cancelExpandTimer();
+		await applyDrop(target);
+	}
+
+	/**
+	 * Apply the drop: the roots move sequentially to consecutive slots under
+	 * the target parent, keeping their relative order. Optimistic local moves
+	 * first, then one API call per root; any failure restores the snapshot
+	 * (pasteRoots pattern) and records nothing, so undo stays clean.
+	 */
+	async function applyDrop(target: DropTarget) {
+		const roots = dragRoots
+			.map((id) => blocks.find((b) => b.id === id))
+			.filter((b): b is Block => b !== undefined);
+		if (roots.length === 0) return;
+
+		// from-positions must be captured before the local moves mutate the blocks.
+		const from = roots.map((r) => ({ parent_id: r.parent_id, position: r.position }));
+		const snapshot = blocks.map((b) => ({ ...b }));
+
+		try {
+			for (let i = 0; i < roots.length; i++) {
+				moveBlockLocal(roots[i], target.parentId, target.position + i);
+			}
+			for (let i = 0; i < roots.length; i++) {
+				await apiMove(roots[i].id, target.parentId, target.position + i);
+			}
+		} catch {
+			blocks = snapshot;
+			showSyncError(t('editor.errMove'));
+			return;
+		}
+
+		recordEntry(
+			roots.map(
+				(root, i) =>
+					({
+						kind: 'move',
+						id: root.id,
+						from: from[i],
+						to: { parent_id: target.parentId, position: target.position + i }
+					}) as Mutation
+			),
+			{ id: roots[0].id, offset: 0 },
+			{ id: roots[0].id, offset: 0 }
+		);
+		// The selection stays selected after a move — it's still contiguous and
+		// the overlay re-measures to the new position.
+	}
+
+	function handleDragEnter() {
+		dragLeaveDepth++;
+	}
+
+	function handleDragLeave() {
+		dragLeaveDepth--;
+		if (dragLeaveDepth <= 0) {
+			dragLeaveDepth = 0;
+			dropTarget = null;
+			cancelExpandTimer();
+		}
+	}
+
+	/** Fires on the source after drop OR cancel (Esc) — teardown either way. */
+	function handleDragEnd() {
+		dropTarget = null;
+		dragRoots = [];
+		dragLeaveDepth = 0;
+		cancelExpandTimer();
+		if (dragImageEl) {
+			dragImageEl.remove();
+			dragImageEl = null;
+		}
+	}
+
 	/**
 	 * Right-click on a block (selected or not) → select it (or keep the existing selection)
 	 * and open the format menu. Right-click in edit mode → browser default (spellcheck, paste).
@@ -1327,6 +1653,13 @@
 	function onEditorContextMenu(e: MouseEvent) {
 		// Don't hijack the native context menu when editing text
 		if ((e.target as HTMLElement).closest('[contenteditable="true"]')) return;
+
+		// A native contextmenu right after our own long-press (Android) —
+		// suppress it without opening a second menu.
+		if (Date.now() < suppressMenuUntil) {
+			e.preventDefault();
+			return;
+		}
 
 		const blockEl = (e.target as HTMLElement).closest('[data-block-id]') as HTMLElement | null;
 		const id = blockEl?.getAttribute('data-block-id');
@@ -1433,7 +1766,7 @@
 			}
 		} catch {
 			blocks = snapshot;
-			showSyncError("Couldn't save — deletion reverted.");
+			showSyncError(t('editor.errDelete'));
 			return;
 		}
 
@@ -1520,7 +1853,7 @@
 			await apiCreateBatch(created);
 		} catch {
 			blocks = snapshot;
-			showSyncError("Couldn't save — paste reverted.");
+			showSyncError(t('editor.errPaste'));
 			return;
 		}
 
@@ -1658,6 +1991,16 @@
 			return;
 		}
 
+		if (action === 'zoom') {
+			// Zoom addresses a single block — right-click / long-press select
+			// exactly one. Multi-selection: no-op.
+			if (selectedBlocks.length === 1) {
+				clearSelection();
+				handleZoom(selectedBlocks[0].id);
+			}
+			return;
+		}
+
 		const contents = selectedBlocks.map((b) => b.content);
 		let newContents: string[];
 
@@ -1712,7 +2055,7 @@
 			target.tagName === 'INPUT' ||
 			target.tagName === 'TEXTAREA';
 
-		const cmd = keybindings[comboFromEvent(e)];
+		const cmd = effectiveKeybindings()[comboFromEvent(e)];
 
 		// Block-selection clipboard: only when blocks are selected AND no text is
 		// selected (native copy/cut/paste keeps working for text) AND we're not in
@@ -1842,7 +2185,7 @@
 		try {
 			await applyUndoEntry(entry, direction);
 		} catch {
-			showSyncError("Couldn't sync — please reload.");
+			showSyncError(t('editor.errSync'));
 		}
 	}
 
@@ -1874,7 +2217,11 @@
 		await performRedo();
 	}
 
-	const commands: Record<CommandId, (e: KeyboardEvent, block: Block) => void> = {
+	// Partial on purpose: the keybinding table also holds global commands
+	// (app.*) that window-level handlers own — the editor must not claim
+	// them. `commands[cmd]?.` at dispatch is the same guard: an unhandled
+	// combo resolves to no command here and is simply a no-op.
+	const commands: Partial<Record<CommandId, (e: KeyboardEvent, block: Block) => void>> = {
 		'block.split': handleEnter,
 		'block.indent': handleTab,
 		'block.outdent': handleShiftTab,
@@ -1907,6 +2254,7 @@
 <div
 	class="editor"
 	class:editor--selecting={dragActive}
+	class:editor--dragging={dragRoots.length > 0}
 	class:editor--intro={intro ?? false}
 	bind:this={editorEl}
 	onclick={handleClickIntent}
@@ -1914,9 +2262,21 @@
 	onmousedown={onEditorMousedown}
 	oncontextmenu={onEditorContextMenu}
 	onpaste={handleEditorPaste}
+	onpointerdown={onEditorPointerDown}
+	ondragenter={handleDragEnter}
+	ondragover={handleDragOver}
+	ondragleave={handleDragLeave}
+	ondrop={handleDrop}
+	ondragend={handleDragEnd}
 >
 	{#if selRect}
 		<div class="selection-overlay" style="top: {selRect.top}px; height: {selRect.height}px;"></div>
+	{/if}
+	{#if indicatorPos}
+		<div
+			class="drop-indicator"
+			style="top: {indicatorPos.top}px; left: {indicatorPos.left}px;"
+		></div>
 	{/if}
 	{#key zoomTarget.id ?? '__root__'}
 		<div class="zoom-view">
@@ -1954,6 +2314,8 @@
 						onToggleCollapse={handleToggleCollapse}
 						onZoom={handleZoom}
 						onClipboardAction={handleBlockClipboardAction}
+						onDragStart={handleDragStart}
+						isDragging={dragRoots.includes(block.id)}
 					/>
 				{:else}
 					<div class="intro-wrap" style="--i: {i}">
@@ -1967,6 +2329,8 @@
 							onToggleCollapse={handleToggleCollapse}
 							onZoom={handleZoom}
 							onClipboardAction={handleBlockClipboardAction}
+							onDragStart={handleDragStart}
+							isDragging={dragRoots.includes(block.id)}
 						/>
 					</div>
 				{/if}
@@ -2015,6 +2379,11 @@
 	onkeydown={onWindowKeydown}
 	onresize={measureSelection}
 	onbeforeunload={handleBeforeUnload}
+	onpointermove={onWindowPointerMove}
+	onpointerup={onWindowPointerEnd}
+	onpointercancel={onWindowPointerEnd}
+	onpointerdown={onWindowPointerDown}
+	onclickcapture={onWindowClickCapture}
 />
 
 <style>
@@ -2023,6 +2392,9 @@
 		margin: 2rem auto;
 		padding: 0;
 		position: relative;
+		/* Touch: keep pan/pinch-zoom, disable the browser's double-tap zoom and
+		   the legacy 300ms tap delay — our own double-tap (zoom) owns the gesture. */
+		touch-action: manipulation;
 	}
 	/* Single continuous band behind the selected blocks.
 	   First child of .editor → blocks paint above it, no z-index needed. */
@@ -2038,6 +2410,22 @@
 	.editor.editor--selecting * {
 		user-select: none !important;
 	}
+	/* Drop target line: a short accent tick at the target depth column.
+	   Drawn like the selection overlay — absolute in the editor, no layout. */
+	.drop-indicator {
+		position: absolute;
+		width: 2rem;
+		height: 2px;
+		border-radius: 1px;
+		background: var(--color-accent);
+		pointer-events: none;
+	}
+	/* While dragging, hide the hover-revealed gutter buttons (same rule as
+	   drag-selecting) so the row stays clean under the drag image. */
+	.editor.editor--dragging :global(.zoom-btn),
+	.editor.editor--dragging :global(.menu-btn) {
+		opacity: 0;
+	}
 	/* Ghost block row: mirrors the metrics of a real block (.block, .block-row,
 	   .block-gutter, .diple) so the capture zone sits pixel-identical to a real
 	   block in the list.  Pale gray (encre 38%) signals it's a placeholder.
@@ -2046,12 +2434,18 @@
 		display: flex;
 		align-items: flex-start;
 		padding: 6px 0; /* match .block */
-		/* gutter: zoom-w 1.35rem + menu-w 1.35rem + bullet half = 3.45rem.
-		   Negative margin hangs the gutter left; expanded width compensates so the
-		   right edge stays flush with the content column (a <button> needs this
-		   explicitly — it doesn't auto-stretch like a <div>). */
-		width: calc(100% + 1.35rem + 1.35rem + 0.75rem);
-		margin-left: calc(-1 * (1.35rem + 1.35rem + 0.75rem));
+		/* Gutter mirrors a real block: zoom slot + menu slot + bullet. The
+		   offsets derive from the SAME vars Block.svelte zeroes on touch /
+		   narrow (< 1024px), so the ghost row stays aligned with real blocks
+		   in every mode. Negative margin hangs the gutter left; expanded
+		   width compensates so the right edge stays flush with the content
+		   column (a <button> needs this explicitly — it doesn't auto-stretch
+		   like a <div>). */
+		--zoom-w: 1.35rem;
+		--menu-w: 1.35rem;
+		--bullet-w: 1.5rem;
+		width: calc(100% + var(--zoom-w) + var(--menu-w) + var(--bullet-w) / 2);
+		margin-left: calc(-1 * (var(--zoom-w) + var(--menu-w) + var(--bullet-w) / 2));
 		border: none;
 		background: none;
 		font: inherit;
@@ -2066,6 +2460,17 @@
 			width: 100%;
 		}
 	}
+	/* Touch OR narrow (< 1024px): the gutter is gone — Block.svelte zeroes
+	   the same vars there, so only the vars need zeroing here; the
+	   width/margin above follow automatically. The 850px rule above still
+	   pins <850px to margin 0 / width 100% (matching the blocks' own 850px
+	   rule) — no ordering conflict, they fix different properties. */
+	@media (hover: none), (max-width: 1023px) {
+		.capture-zone {
+			--zoom-w: 0;
+			--menu-w: 0;
+		}
+	}
 	/* No background fill on hover — the text simply brightens. */
 	.capture-zone:hover {
 		color: color-mix(in srgb, var(--color-encre) 65%, transparent);
@@ -2078,7 +2483,16 @@
 	}
 	.cz-spacer {
 		flex-shrink: 0;
-		width: 1.35rem;
+	}
+	/* Two spacers mirror the zoom and menu slots of a real block — sized
+	   from the same vars (zeroed together on touch/narrow). nth-of-type is
+	   brittle if the gutter markup changes: keep both spacers directly
+	   before the bullet. */
+	.cz-spacer:nth-of-type(1) {
+		width: var(--zoom-w);
+	}
+	.cz-spacer:nth-of-type(2) {
+		width: var(--menu-w);
 	}
 	.cz-bullet {
 		flex-shrink: 0;

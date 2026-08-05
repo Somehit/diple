@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { fade } from 'svelte/transition';
 	import { receive } from '$lib/hero-transition';
+	import { t } from '$lib/i18n.svelte';
 	import InlinePalette from './InlinePalette.svelte';
 	import SyncStatus from './SyncStatus.svelte';
 
@@ -9,12 +10,16 @@
 		onToggle,
 		helpOpen = false,
 		onToggleHelp,
+		sidebarOpen = false,
 		paletteRef = $bindable(null as InlinePalette | null)
 	}: {
 		allCollapsed?: boolean;
 		onToggle?: () => void;
 		helpOpen?: boolean;
 		onToggleHelp?: () => void;
+		/** True when the left sidebar is open — the corner cluster drops below
+		 *  the drawer on narrow screens (it would float over it otherwise). */
+		sidebarOpen?: boolean;
 		paletteRef?: InlinePalette | null;
 	} = $props();
 
@@ -37,15 +42,17 @@
 	an open panel and never move — their 1rem inset stays the same whether a
 	panel is open or not.
 -->
-<div class="corner-btns" transition:fade={{ duration: 150 }}>
+<div
+	class="corner-btns"
+	class:corner-btns--sidebar-open={sidebarOpen}
+	transition:fade={{ duration: 150 }}
+>
 	<SyncStatus />
 	<button
 		class="corner-btn"
 		onclick={onToggle}
-		aria-label={allCollapsed ? 'Reveal all' : 'Collapse all'}
-		title={allCollapsed
-			? "Reveal all blocks — show every block's children again"
-			: 'Collapse all blocks — hide the children of every block in this view'}
+		aria-label={allCollapsed ? t('nav.revealAll') : t('nav.collapseAll')}
+		title={allCollapsed ? t('nav.revealAll.title') : t('nav.collapseAll.title')}
 	>
 		{#if allCollapsed}
 			<!-- Reveal all: chevrons diverging, "unfold" (matches Lucide
@@ -85,8 +92,8 @@
 	<button
 		class="corner-btn"
 		onclick={onToggleHelp}
-		aria-label={helpOpen ? 'Close help panel' : 'Help — shortcuts and filters'}
-		title={helpOpen ? 'Close help panel' : 'Help — shortcuts and filters'}
+		aria-label={helpOpen ? t('nav.closeHelp') : t('nav.help')}
+		title={helpOpen ? t('nav.closeHelp') : t('nav.help')}
 	>
 		<!-- Question mark in a circle (Lucide "circle-help", MIT) -->
 		<svg
@@ -170,5 +177,30 @@
 	.corner-btn:hover {
 		background: color-mix(in srgb, var(--color-encre) 8%, transparent);
 		color: var(--color-encre);
+	}
+
+	/*
+	 * Narrow (< 1024px): two rows. The pill stays on row 1 (full width, the
+	 * topbar already centers it); the corner cluster drops to row 2 via
+	 * --actions-row-top. The blur band extends so the mask's opaque zone
+	 * (~55% of the total height) still ends just below the buttons — same
+	 * look as wide, just taller.
+	 */
+	@media (max-width: 1023px) {
+		.topbar {
+			/* 0.875rem + pill + 0.5rem gap + 36px buttons + 2.5rem fade. */
+			padding-bottom: calc(var(--actions-row-top) + 36px + 2.5rem);
+		}
+		.corner-btns {
+			top: var(--actions-row-top);
+		}
+		/* Sidebar drawer open → the cluster drops behind it (same z as the
+		   scrim, which renders later in the DOM and paints on top). The drawer
+		   covers it on phones; on wider narrow screens it stays visible but
+		   non-overlapping. The help drawer keeps the cluster above (its
+		   content clears the buttons by design). */
+		.corner-btns--sidebar-open {
+			z-index: 54;
+		}
 	}
 </style>

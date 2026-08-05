@@ -4,6 +4,20 @@
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<meta name="text-scale" content="scale" />
+		<script>
+			// Apply the persisted theme before first paint so dark-mode users
+			// never see a light flash. Mirrors the defaults + storage key in
+			// settings.svelte.ts — keep the two in sync.
+			try {
+				var s = JSON.parse(localStorage.getItem('diple:settings:v1') || '{}');
+				var t = s.theme || 'system';
+				var dark =
+					t === 'dark' || (t === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+				var e = document.documentElement;
+				e.dataset.theme = t;
+				e.style.colorScheme = dark ? 'dark' : 'light';
+			} catch (err) {}
+		</script>
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">

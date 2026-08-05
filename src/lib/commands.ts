@@ -1,4 +1,30 @@
-import { keybindings, type CommandId } from './keybindings';
+import { type CommandId } from './keybindings';
+import { effectiveKeybindings } from './keybindings.svelte';
+import { t } from './i18n.svelte';
+
+/**
+ * Canonical English command labels. Kept as the enforced-complete table
+ * (Record<CommandId, string> makes `npm run check` fail if a command is
+ * added without a label); the i18n EN dict mirrors these values under
+ * cmd.* keys and FR overrides them — keep the two in sync when a
+ * command is added.
+ */
+export const COMMAND_LABELS: Record<CommandId, string> = {
+	'block.split': 'Split block',
+	'block.indent': 'Indent',
+	'block.outdent': 'Outdent',
+	'block.backspace': 'Delete block',
+	'block.moveUp': 'Move block up',
+	'block.moveDown': 'Move block down',
+	'edit.undo': 'Undo',
+	'edit.redo': 'Redo',
+	'edit.copy': 'Copy',
+	'edit.cut': 'Cut',
+	'edit.paste': 'Paste',
+	'view.zoomIn': 'Zoom into block',
+	'view.zoomOut': 'Zoom out',
+	'app.focusSearch': 'Focus search'
+};
 
 /**
  * One command shown in the command palette (Ctrl+P).
@@ -65,6 +91,25 @@ export function comboLabel(combo: string): string {
 }
 
 /**
+ * Every shortcut the app has, in the effective table's order, pretty-
+ * printed via comboLabel. Reads the store on each call, so rebinds show
+ * up immediately. Ctrl+K is a real binding now (app.focusSearch).
+ * Labels resolve through the i18n dict (cmd.* keys) — COMMAND_LABELS
+ * above stays the canonical English table.
+ */
+export function commandShortcuts(): { combo: string; label: string }[] {
+	return Object.entries(effectiveKeybindings()).map(([combo, cmd]) => ({
+		combo: comboLabel(combo),
+		label: commandLabel(cmd)
+	}));
+}
+
+/** Human label for a command id — translated, English fallback. */
+export function commandLabel(cmd: CommandId): string {
+	return t('cmd.' + cmd);
+}
+
+/**
  * Resolve a command's shortcut to a displayable combo.
  * CommandIds are reverse-looked-up in the keybindings map (first binding wins);
  * anything else is treated as a literal combo string.
@@ -72,6 +117,7 @@ export function comboLabel(combo: string): string {
 export function shortcutOf(cmd: PaletteCommand): string | null {
 	if (!cmd.shortcut) return null;
 	const combo =
-		Object.entries(keybindings).find(([, id]) => id === cmd.shortcut)?.[0] ?? cmd.shortcut;
+		Object.entries(effectiveKeybindings()).find(([, id]) => id === cmd.shortcut)?.[0] ??
+		cmd.shortcut;
 	return comboLabel(combo);
 }

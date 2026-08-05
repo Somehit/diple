@@ -1,14 +1,24 @@
 <script lang="ts">
 	import { zoomTo } from '$lib/zoom.svelte';
 	import { tree } from '$lib/tree.svelte';
+	import { t } from '$lib/i18n.svelte';
 
-	let { zoomId }: { zoomId: string | null } = $props();
-
-	let open = $state(false);
-
-	function toggle() {
-		open = !open;
-	}
+	let {
+		zoomId,
+		open = false,
+		onToggle,
+		onNavigate,
+		onOpenSettings
+	}: {
+		zoomId: string | null;
+		open?: boolean;
+		onToggle?: () => void;
+		/** Called after a navigation (zoom into a sibling / go up).
+		 *  The parent decides whether the panel should close (narrow screens). */
+		onNavigate?: () => void;
+		/** Opens the centered settings modal (+page.svelte owns the state). */
+		onOpenSettings?: () => void;
+	} = $props();
 
 	// --- Content derivation ---
 
@@ -35,6 +45,7 @@
 
 	function handleNavigate(id: string) {
 		zoomTo(id);
+		onNavigate?.();
 	}
 
 	function handleGoUp() {
@@ -42,13 +53,15 @@
 	}
 </script>
 
-<!-- Toggle button — hamburger icon, slides with the panel edge -->
+<!-- Toggle button — hamburger icon, slides with the panel edge on wide
+     screens; on narrow screens it stays in the actions row and is hidden
+     while the drawer is open (see the media query below). -->
 <button
 	class="side-toggle"
 	class:side-toggle--open={open}
-	onclick={toggle}
-	aria-label={open ? 'Close sidebar' : 'Open sidebar'}
-	title={open ? 'Close sidebar' : 'Open sidebar'}
+	onclick={onToggle}
+	aria-label={open ? t('side.close') : t('side.open')}
+	title={open ? t('side.close') : t('side.open')}
 >
 	<!-- Hamburger: three horizontal bars (Lucide "menu", MIT) -->
 	<svg
@@ -72,7 +85,7 @@
 	<div class="side-scroll">
 		{#if zoomId && parentBlock}
 			<button class="side-parent" onclick={handleGoUp}>
-				<span class="side-parent-text">{parentBlock.content || '(empty)'}</span>
+				<span class="side-parent-text">{parentBlock.content || t('common.empty')}</span>
 			</button>
 			<div class="side-sep" role="separator"></div>
 		{/if}
@@ -84,7 +97,7 @@
 					class:side-item--active={item.id === zoomId}
 					onclick={() => handleNavigate(item.id)}
 				>
-					<span class="side-item-text">{item.content || '(empty)'}</span>
+					<span class="side-item-text">{item.content || t('common.empty')}</span>
 				</button>
 			{/each}
 		</div>
@@ -92,18 +105,23 @@
 		{#if sidebarItems.length === 0}
 			<div class="side-empty">
 				{#if !zoomId}
-					No root blocks yet
+					{t('side.noRoots')}
 				{:else}
-					No siblings
+					{t('side.noSiblings')}
 				{/if}
 			</div>
 		{/if}
 
 		<div class="side-sep" role="separator"></div>
 
-		<!-- Settings — reserved slot: no panel yet, wired when the first
-		     real settings exist. .side-items flex:1 pins it to the bottom. -->
-		<button class="side-settings" aria-label="Settings" title="Settings">
+		<!-- Settings — opens the centered modal; .side-items flex:1 pins it
+		     to the bottom. -->
+		<button
+			class="side-settings"
+			aria-label={t('side.settings')}
+			title={t('side.settings')}
+			onclick={onOpenSettings}
+		>
 			<!-- Gear (Lucide "settings", MIT) -->
 			<svg
 				width="16"
@@ -120,7 +138,7 @@
 				/>
 				<circle cx="12" cy="12" r="3" />
 			</svg>
-			<span>Settings</span>
+			<span>{t('side.settings')}</span>
 		</button>
 	</div>
 </div>
@@ -163,7 +181,10 @@
 		position: fixed;
 		top: 0;
 		left: 0;
+		/* 100vh fallback, then 100dvh so the drawer clears the mobile URL
+		   bar instead of running under it. */
 		height: 100vh;
+		height: 100dvh;
 		z-index: 55;
 		width: 260px;
 		background: color-mix(in srgb, var(--color-fond) 92%, transparent);
@@ -208,7 +229,6 @@
 	.side-parent-text {
 		display: block;
 		width: 100%;
-		font-size: 0.85rem;
 		font-weight: 600;
 		color: color-mix(in srgb, var(--color-encre) 70%, transparent);
 		white-space: nowrap;
@@ -240,7 +260,6 @@
 		cursor: pointer;
 		text-align: left;
 		font: inherit;
-		font-size: 0.85rem;
 		color: color-mix(in srgb, var(--color-encre) 65%, transparent);
 		transition:
 			color 0.1s ease,
@@ -278,7 +297,6 @@
 		cursor: pointer;
 		text-align: left;
 		font: inherit;
-		font-size: 0.85rem;
 		color: color-mix(in srgb, var(--color-encre) 65%, transparent);
 		transition:
 			color 0.1s ease,
@@ -289,16 +307,19 @@
 		color: var(--color-encre);
 	}
 
-	@media (max-width: 600px) {
+	/* Narrow (< 1024px): the panel becomes a drawer — width from --drawer-w
+	   (layout.css), toggle parked in the actions row and hidden while open
+	   (closing = scrim tap, Escape, or navigating). No toggle slide here:
+	   the drawer itself still slides via its transform transition. */
+	@media (max-width: 1023px) {
 		.side-panel {
-			width: 190px;
-			transform: translateX(-100%);
+			width: var(--drawer-w);
 		}
-		.side-panel--open {
-			transform: translateX(0);
+		.side-toggle {
+			top: var(--actions-row-top);
 		}
 		.side-toggle--open {
-			left: 206px;
+			display: none;
 		}
 	}
 </style>

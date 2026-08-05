@@ -1,7 +1,28 @@
+<script module>
+	/**
+	 * Double-tap state shared across ALL Block instances (module scope).
+	 * A tap on any block must cancel the pending edit of a previous tap on
+	 * another block — otherwise tapping through blocks quickly would start
+	 * several edits at once.
+	 */
+	let lastTapAt = 0;
+	let lastTapX = 0;
+	let lastTapY = 0;
+	let pendingEdit: ReturnType<typeof setTimeout> | null = null;
+	let touchDevice: boolean | null = null;
+
+	/** Client-only (called from event handlers, never during SSR). */
+	function isTouchScreen(): boolean {
+		if (touchDevice === null) touchDevice = window.matchMedia('(hover: none)').matches;
+		return touchDevice;
+	}
+</script>
+
 <script lang="ts">
 	import type { Block } from '$lib/server/db/queries';
 	import { renderMarkdown } from '$lib/utils/markdown';
-	import { caretFromClick } from '$lib/utils/caret';
+	import { caretFromClick, caretFromNativeSelection } from '$lib/utils/caret';
+	import { settings } from '$lib/settings.svelte';
 	import BlockRecursive from './Block.svelte';
 	import BlockMenu from './BlockMenu.svelte';
 	import type { FormatAction } from './FormatMenuItems.svelte';
@@ -15,7 +36,9 @@
 		autoEditRequest = null,
 		onToggleCollapse,
 		onZoom,
-		onClipboardAction
+		onClipboardAction,
+		onDragStart,
+		isDragging = false
 	}: {
 		block: Block;
 		childrenMap: Map<string | null, Block[]>;
@@ -26,12 +49,22 @@
 		onToggleCollapse?: (id: string) => void;
 		onZoom?: (id: string) => void;
 		onClipboardAction?: (id: string, action: FormatAction) => void;
+		onDragStart?: (id: string, e: DragEvent) => void;
+		isDragging?: boolean;
 	} = $props();
 
 	const children = $derived(childrenMap.get(block.id) ?? []);
 
-	/** Total descendants (children + grandchildren + …) — shown when collapsed. */
-	const descendantCount = $derived.by(() => {
+	/**
+	 * Badge count shown next to collapsed blocks. Mode comes from settings:
+	 * 'descendants' = whole subtree (today's behavior), 'children' = direct
+	 * children only, 'hidden' = no badge and no walk at all. Only one branch
+	 * of the walk is ever paid for — the setting is read inside the derived
+	 * so a change re-renders every block instantly.
+	 */
+	const badgeCount = $derived.by(() => {
+		if (settings.blockCount === 'hidden') return 0;
+		if (settings.blockCount === 'children') return children.length;
 		let count = 0;
 		function walk(parentId: string) {
 			const kids = childrenMap.get(parentId) ?? [];
@@ -115,9 +148,45 @@
 		// selectable (before .editor applies user-select:none for the drag
 		// potential). Fall back to the click position for non-mouse entries.
 		if (pendingCaret === null) {
-			pendingCaret = caretFromClick(e, viewEl, block.content.length);
+			pendingCaret = caretFromClick(e, viewEl, block.content);
 		}
 		editing = true;
+	}
+
+	/**
+	 * View-mode tap/click. Desktop: edit immediately (the loupe button and the
+	 * context menu own zoom). Touch: a tap may be the first half of a
+	 * double-tap → delay the edit by 260ms; a second tap within 300ms / 40px
+	 * cancels it and zooms into the block instead.
+	 */
+	function handleViewClick(e: MouseEvent) {
+		if ((e.target as HTMLElement).tagName === 'A') return;
+		if (!isTouchScreen()) {
+			startEditing(e);
+			return;
+		}
+		const now = Date.now();
+		if (
+			now - lastTapAt < 300 &&
+			Math.abs(e.clientX - lastTapX) < 40 &&
+			Math.abs(e.clientY - lastTapY) < 40
+		) {
+			lastTapAt = 0;
+			if (pendingEdit) {
+				clearTimeout(pendingEdit);
+				pendingEdit = null;
+			}
+			onZoom?.(block.id);
+			return;
+		}
+		lastTapAt = now;
+		lastTapX = e.clientX;
+		lastTapY = e.clientY;
+		if (pendingEdit) clearTimeout(pendingEdit);
+		pendingEdit = setTimeout(() => {
+			pendingEdit = null;
+			startEditing(e);
+		}, 260);
 	}
 
 	function stopEditing() {
@@ -139,6 +208,25 @@
 			block.content = editEl.textContent ?? '';
 		}
 	}
+
+	/**
+	 * The diple is the drag handle (Workflowy-style): click still toggles
+	 * collapse, drag moves the block. A block being edited must not move
+	 * mid-edit (its content isn't committed), so the drag is cancelled.
+	 * setData is required — Firefox refuses to start a drag without it. The
+	 * editor builds the drag image and snapshots the dragged roots.
+	 */
+	function handleDragStart(e: DragEvent) {
+		if (editing) {
+			e.preventDefault();
+			return;
+		}
+		// dataTransfer is technically nullable; a dragstart without it is a no-op.
+		if (!e.dataTransfer) return;
+		e.dataTransfer.setData('text/plain', block.id);
+		e.dataTransfer.effectAllowed = 'move';
+		onDragStart?.(block.id, e);
+	}
 </script>
 
 <div
@@ -148,7 +236,7 @@
 	data-block-id={block.id}
 	data-depth={depth}
 >
-	<div class="block-row" data-h={editing ? 0 : headingLevel}>
+	<div class="block-row" class:drag-source={isDragging} data-h={editing ? 0 : headingLevel}>
 		<div class="block-gutter">
 			{#if onZoom}
 				{#if editing || block.content.trim() === ''}
@@ -175,20 +263,27 @@
 				<!-- Formatting mid-edit would fight the capturedContent flow — spacer keeps alignment -->
 				<span class="menu-spacer" aria-hidden="true"></span>
 			{:else}
-				<BlockMenu {block} {onSaveContent} {onClipboardAction} />
+				<BlockMenu {block} {onSaveContent} {onClipboardAction} {onZoom} />
 			{/if}
 			{#if children.length > 0}
 				<button
 					class="bullet bullet--toggle"
 					class:editing
 					aria-label={block.collapsed ? 'Expand' : 'Collapse'}
+					draggable="true"
 					onclick={() => onToggleCollapse?.(block.id)}
-					onmousedown={(e) => e.preventDefault()}
+					ondragstart={handleDragStart}
 				>
 					<span class="diple" class:expanded={block.collapsed === 0}></span>
 				</button>
 			{:else}
-				<span class="bullet" class:editing aria-hidden="true">
+				<span
+					class="bullet"
+					class:editing
+					draggable="true"
+					ondragstart={handleDragStart}
+					aria-hidden="true"
+				>
 					<span class="diple"></span>
 				</span>
 			{/if}
@@ -202,16 +297,12 @@
 				class:hidden={editing}
 				role="button"
 				tabindex="0"
-				/* Pre-compute the caret on mousedown: this local handler runs
-				   BEFORE .editor's mousedown adds editor--selecting
-				   (user-select: none), so caretPositionFromPoint still sees
-				   selectable text. The click then reuses this value. */
 				onmousedown={(e) => {
-					pendingCaret = caretFromClick(e, viewEl, block.content.length);
+					pendingCaret =
+						caretFromNativeSelection(viewEl, block.content) ??
+						caretFromClick(e, viewEl, block.content);
 				}}
-				onclick={(e) => {
-					if ((e.target as HTMLElement).tagName !== 'A') startEditing(e);
-				}}
+				onclick={handleViewClick}
 			>
 				{@html renderMarkdown(block.content)}
 			</span>
@@ -229,8 +320,8 @@
 			></div>
 		</div>
 
-		{#if block.collapsed === 1 && descendantCount > 0}
-			<span class="child-count" aria-hidden="true">› {descendantCount}</span>
+		{#if block.collapsed === 1 && badgeCount > 0}
+			<span class="child-count" aria-hidden="true">› {badgeCount}</span>
 		{/if}
 	</div>
 
@@ -246,6 +337,8 @@
 					{onToggleCollapse}
 					{onZoom}
 					{onClipboardAction}
+					{onDragStart}
+					{isDragging}
 					{autoEditRequest}
 				/>
 			{/each}
@@ -286,18 +379,27 @@
 		justify-content: center;
 		color: color-mix(in srgb, var(--color-encre) 40%, transparent);
 		user-select: none;
+		/* The diple is the drag handle — grab signals the affordance. */
+		cursor: grab;
 	}
 	.bullet--toggle {
 		border: none;
 		background: none;
 		font: inherit;
-		cursor: pointer;
 		padding: 0;
-		/* width, flex centering, color from .bullet */
+		/* width, flex centering, color, grab cursor from .bullet */
+	}
+	.bullet:hover {
+		color: color-mix(in srgb, var(--color-encre) 60%, transparent);
 	}
 	.bullet.editing,
 	.bullet--toggle.editing {
 		color: var(--color-accent);
+	}
+	/* The dragged row dims while the drag is active — the native ghost
+	   carries the actual look. */
+	.drag-source {
+		opacity: 0.4;
 	}
 	.diple {
 		display: block;
@@ -390,6 +492,40 @@
 	/* Prevent the hover reveal from triggering while drag-selecting (cursor over blocks). */
 	:global(.editor--selecting) .zoom-btn {
 		opacity: 0;
+	}
+
+	/*
+	 * Touch screens (no hover) OR narrow layout (< 1024px): the loupe and
+	 * ••• buttons are unusable — no hover on touch; on narrow screens they
+	 * just eat left space and shift the text (they can't be hovered
+	 * reliably anyway). Hide them and collapse the gutter so content
+	 * starts right after the bullet. The bullets/spacers read
+	 * --zoom-w/--menu-w, so zeroing them keeps every alignment (depth-0
+	 * hang, guide line, menu). Desktop ≥1024px keeps the gutter (hover
+	 * works). Long-press / right-click (with Zoom) and double-tap cover
+	 * the actions.
+	 */
+	@media (hover: none), (max-width: 1023px) {
+		.block {
+			--zoom-w: 0;
+			--menu-w: 0;
+		}
+		.zoom-btn {
+			display: none;
+		}
+		:global(.menu-btn) {
+			display: none;
+		}
+	}
+	/* Touch only: stop native text selection / the iOS callout during
+	   long-press; edit mode (contenteditable) is unaffected. A narrow
+	   desktop window (mouse) keeps native text selection. */
+	@media (hover: none) {
+		.block-content--view {
+			user-select: none;
+			-webkit-user-select: none;
+			-webkit-touch-callout: none;
+		}
 	}
 	.block-content {
 		outline: none;

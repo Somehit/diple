@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { Block } from '$lib/server/db/queries';
+	import { t } from '$lib/i18n.svelte';
 	import FormatMenuItems, { type FormatAction } from './FormatMenuItems.svelte';
 	import {
 		toggleHeading,
@@ -21,11 +22,13 @@
 	let {
 		block,
 		onSaveContent,
-		onClipboardAction
+		onClipboardAction,
+		onZoom
 	}: {
 		block: Block;
 		onSaveContent: (id: string, before: string, after: string, caret?: number) => void;
 		onClipboardAction?: (id: string, action: FormatAction) => void;
+		onZoom?: (id: string) => void;
 	} = $props();
 
 	let open = $state(false);
@@ -36,15 +39,19 @@
 		if (!btnEl) return;
 		const rect = btnEl.getBoundingClientRect();
 		// Clamp like SelectionMenu: keep the dropdown inside the viewport.
-		// Estimate covers clipboard section + formats + delete (~340px).
+		// Estimate covers zoom + clipboard section + formats + delete (~400px).
 		const x = Math.min(rect.left, (visualViewport?.width ?? window.innerWidth) - 150);
-		const y = Math.min(rect.bottom + 4, (visualViewport?.height ?? window.innerHeight) - 340);
+		const y = Math.min(rect.bottom + 4, (visualViewport?.height ?? window.innerHeight) - 400);
 		menuPos = { x, y };
 		open = true;
 	}
 
 	function apply(action: FormatAction) {
 		open = false;
+		if (action === 'zoom') {
+			onZoom?.(block.id);
+			return;
+		}
 		if (
 			onClipboardAction &&
 			(action === 'copy' || action === 'cut' || action === 'paste' || action === 'delete')
@@ -91,7 +98,7 @@
 	class="menu-btn"
 	class:menu-btn--open={open}
 	bind:this={btnEl}
-	aria-label="Block options"
+	aria-label={t('blockmenu.aria')}
 	onclick={openMenu}
 >
 	•••
@@ -100,7 +107,7 @@
 {#if open && menuPos}
 	<div class="menu-backdrop" role="presentation" onclick={() => (open = false)}></div>
 	<div class="menu-dropdown" style="left: {menuPos.x}px; top: {menuPos.y}px;">
-		<FormatMenuItems onApply={apply} showClipboard={true} showDelete={true} />
+		<FormatMenuItems onApply={apply} showZoom={true} showClipboard={true} showDelete={true} />
 	</div>
 {/if}
 

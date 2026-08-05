@@ -2,6 +2,7 @@
 	import { resultsState } from '$lib/palette.svelte';
 	import { renderMarkdown } from '$lib/utils/markdown';
 	import { shortcutOf } from '$lib/commands';
+	import { t } from '$lib/i18n.svelte';
 
 	/**
 	 * Renders the search results dropdown at body level, escaping the navbar's
@@ -47,7 +48,7 @@
 								<!-- eslint-disable-next-line svelte/no-at-html-tags -- renderMarkdown escapes entities first -->
 								{@html renderMarkdown(item.row.content)}
 							{:else}
-								<em class="empty">(empty)</em>
+								<em class="empty">{t('common.empty')}</em>
 							{/if}
 						</span>
 						{#if item.row.path.length > 0}
@@ -58,7 +59,7 @@
 										class="crumb"
 										onclick={(e) => resultsState.chooseCrumb(e, item.row, crumb.id)}
 									>
-										{crumb.content || '(empty)'}
+										{crumb.content || t('common.empty')}
 									</button>
 								{/each}
 							</span>
@@ -67,7 +68,7 @@
 				{/if}
 			</div>
 		{/each}
-		<div class="footer">↑↓ navigate · ↵ open · esc close</div>
+		<div class="footer">{t('palette.footer')}</div>
 	</div>
 {/if}
 
@@ -103,7 +104,7 @@
 		cursor: pointer;
 	}
 	.row--selected {
-		background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+		background: var(--color-hover);
 	}
 	.row-main {
 		min-width: 0;

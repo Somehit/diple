@@ -7,8 +7,10 @@
 	import SearchPill from '$lib/components/SearchPill.svelte';
 	import Sidebar from '$lib/components/Sidebar.svelte';
 	import HelpPanel from '$lib/components/HelpPanel.svelte';
+	import SettingsModal from '$lib/components/SettingsModal.svelte';
 	import { zoomTarget } from '$lib/zoom.svelte';
 	import { send } from '$lib/hero-transition';
+	import { t } from '$lib/i18n.svelte';
 	import { tree } from '$lib/tree.svelte';
 	import type { Block } from '$lib/server/db/queries';
 
@@ -17,7 +19,14 @@
 	let collapseAll = $state<() => void>(() => {});
 	let revealAll = $state<() => void>(() => {});
 	let allCollapsed = $state(false);
-	let helpOpen = $state(false);
+	/**
+	 * Which side panel is open. Single source of truth: the left sidebar
+	 * (outline) and the right help panel are mutually exclusive — opening
+	 * one closes the other, so two drawers can never overlap.
+	 */
+	let panel = $state<'sidebar' | 'help' | null>(null);
+	/** Centered settings modal — independent from the side panels, sits above them. */
+	let settingsOpen = $state(false);
 	let paletteRef = $state<InlinePalette | null>(null);
 
 	function handleCollapseToggle() {
@@ -28,8 +37,42 @@
 		}
 	}
 
-	function handleHelpToggle() {
-		helpOpen = !helpOpen;
+	function togglePanel(p: 'sidebar' | 'help') {
+		panel = panel === p ? null : p;
+	}
+
+	/** Settings modal is exclusive with the side panels: opening it closes
+	 *  whatever drawer is open, so the scrim never covers half-open UI. */
+	function toggleSettings() {
+		if (!settingsOpen) panel = null;
+		settingsOpen = !settingsOpen;
+	}
+
+	/** Escape closes the top-most thing first: the settings modal, then an
+	 *  open side panel — at any screen size. */
+	function onGlobalKeydown(e: KeyboardEvent) {
+		if (e.key !== 'Escape') return;
+		if (settingsOpen) settingsOpen = false;
+		else if (panel) panel = null;
+	}
+
+	/** True below 1024px (the "narrow" layout: stacked navbar, drawers). */
+	let isNarrow = $state(false);
+	$effect(() => {
+		const mql = window.matchMedia('(max-width: 1023px)');
+		isNarrow = mql.matches;
+		const onChange = (e: MediaQueryListEvent) => (isNarrow = e.matches);
+		mql.addEventListener('change', onChange);
+		return () => mql.removeEventListener('change', onChange);
+	});
+
+	/**
+	 * Sidebar navigation: zoom into the clicked block. On narrow screens the
+	 * drawer closes too — the user navigated, they want to see the content.
+	 * On wide screens the outline stays open (like Notion's sidebar).
+	 */
+	function handleSidebarNavigate() {
+		if (isNarrow) panel = null;
 	}
 
 	// Seed the zoom target from the server-provided URL param.  Runs during
@@ -129,13 +172,16 @@
 	}
 </script>
 
+<svelte:window onkeydown={onGlobalKeydown} />
+
 {#if heroDismissed || zoomed}
 	<Navbar
 		bind:paletteRef
 		{allCollapsed}
-		{helpOpen}
+		helpOpen={panel === 'help'}
+		sidebarOpen={panel === 'sidebar'}
 		onToggle={handleCollapseToggle}
-		onToggleHelp={handleHelpToggle}
+		onToggleHelp={() => togglePanel('help')}
 	/>
 {/if}
 
@@ -164,7 +210,7 @@
 						<circle cx="11" cy="11" r="7" />
 						<line x1="16.5" y1="16.5" x2="21" y2="21" />
 					</svg>
-					<span class="hero-hint">Search or command…</span>
+					<span class="hero-hint">{t('hero.hint')}</span>
 					<span class="hero-chips" aria-hidden="true">
 						<kbd>Ctrl+K</kbd>
 					</span>
@@ -174,10 +220,26 @@
 	</section>
 {/if}
 
-<Sidebar zoomId={zoomTarget.id} />
+{#if panel && isNarrow}
+	<!-- Drawer scrim (narrow only): dims the app behind the open drawer.
+	     Tap closes. z-54: below the panels (55) and floating toggles (56),
+	     above the navbar (50) and content. -->
+	<button class="scrim" onclick={() => (panel = null)} aria-label={t('hero.closePanel')}></button>
+{/if}
+
+<Sidebar
+	zoomId={zoomTarget.id}
+	open={panel === 'sidebar'}
+	onToggle={() => togglePanel('sidebar')}
+	onNavigate={handleSidebarNavigate}
+	onOpenSettings={toggleSettings}
+/>
 
 <!-- Right-hand help panel — toggled by the "?" button in the navbar -->
-<HelpPanel open={helpOpen} />
+<HelpPanel open={panel === 'help'} />
+
+<!-- Centered settings modal — opened from the sidebar footer button -->
+<SettingsModal open={settingsOpen} onClose={() => (settingsOpen = false)} />
 
 <main class:main--with-navbar={heroDismissed || zoomed}>
 	<Editor
@@ -231,9 +293,25 @@
 		white-space: nowrap;
 	}
 	/* When the navbar is visible (fixed at top), main needs clearance so
-	   content doesn't hide behind it */
+	   content doesn't hide behind it. --navbar-h is taller in the narrow
+	   two-row layout (layout.css). */
 	.main--with-navbar {
-		padding-top: 4.5rem;
+		padding-top: var(--navbar-h);
+	}
+	/* Drawer scrim — narrow only. Fades in with the drawer's slide. */
+	.scrim {
+		position: fixed;
+		inset: 0;
+		z-index: 54;
+		border: none;
+		background: color-mix(in srgb, var(--color-encre) 35%, transparent);
+		cursor: pointer;
+		animation: scrim-in 0.15s ease;
+	}
+	@keyframes scrim-in {
+		from {
+			opacity: 0;
+		}
 	}
 	/* Hero pill click target — same look as the navbar search trigger */
 	.hero-trigger {
