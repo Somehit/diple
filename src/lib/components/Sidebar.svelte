@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { zoomTo } from '$lib/zoom.svelte';
+	import { zoomTo, zoomToRoot } from '$lib/zoom.svelte';
 	import { tree } from '$lib/tree.svelte';
 	import { t } from '$lib/i18n.svelte';
 
@@ -48,6 +48,14 @@
 		onNavigate?.();
 	}
 
+	/** Home row: at root it's the current-location indicator (no-op); when
+	 *  zoomed it navigates back to the root view. */
+	function handleGoHome() {
+		if (!zoomId) return;
+		zoomToRoot();
+		onNavigate?.();
+	}
+
 	function handleGoUp() {
 		if (parentBlock) handleNavigate(parentBlock.id);
 	}
@@ -83,14 +91,46 @@
 <!-- Sidebar panel — slides from left, fully hidden when closed (no hover strip) -->
 <div class="side-panel" class:side-panel--open={open}>
 	<div class="side-scroll">
-		{#if zoomId && parentBlock}
-			<button class="side-parent" onclick={handleGoUp}>
-				<span class="side-parent-text">{parentBlock.content || t('common.empty')}</span>
-			</button>
-			<div class="side-sep" role="separator"></div>
-		{/if}
-
 		<div class="side-items">
+			<!-- Home — the current-location indicator, shown only where the
+			     current block's parent IS Home (root view, or a root block
+			     zoomed in): those blocks have no other parent to reference.
+			     Deeper views rely on the parent breadcrumb below instead. -->
+			{#if !parentBlock}
+				<button
+					class="side-item side-item--home"
+					class:side-item--active={!zoomId}
+					onclick={handleGoHome}
+					title={t('zoom.home')}
+				>
+					<!-- House (Lucide "home", MIT) -->
+					<svg
+						class="side-home-icon"
+						width="16"
+						height="16"
+						viewBox="0 0 24 24"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="2"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						aria-hidden="true"
+					>
+						<path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+						<polyline points="9 22 9 12 15 12 15 22" />
+					</svg>
+					<span class="side-item-text">{t('zoom.home')}</span>
+				</button>
+			{/if}
+
+			{#if zoomId && parentBlock}
+				<button class="side-parent" onclick={handleGoUp}>
+					<span class="side-parent-text">{parentBlock.content || t('common.empty')}</span>
+				</button>
+			{/if}
+
+			<div class="side-sep" role="separator"></div>
+
 			{#each sidebarItems as item (item.id)}
 				<button
 					class="side-item"
@@ -169,7 +209,7 @@
 		padding: 0;
 	}
 	.side-toggle--open {
-		left: 276px;
+		left: 316px;
 	}
 	.side-toggle:hover {
 		color: var(--color-encre);
@@ -186,10 +226,15 @@
 		height: 100vh;
 		height: 100dvh;
 		z-index: 55;
-		width: 260px;
-		background: color-mix(in srgb, var(--color-fond) 92%, transparent);
-		backdrop-filter: blur(12px);
-		-webkit-backdrop-filter: blur(12px);
+		width: 300px;
+		/* Chrome, not content: base font slightly smaller than the body
+		   (which the editor uses). em so it scales with the user's text-size
+		   setting like everything else. Narrow screens keep this size; the
+		   wide layout tightens it further below (min-width 1024px). */
+		font-size: 0.95em;
+		/* Evernote-gray panel (--color-sidebar) — deliberately one tone
+		   apart from the white note area, like Evernote's own sidebar. */
+		background: var(--color-sidebar);
 		border-right: 1px solid color-mix(in srgb, var(--color-encre) 8%, transparent);
 		overflow: hidden;
 		transform: translateX(-100%);
@@ -200,7 +245,8 @@
 	}
 
 	.side-scroll {
-		padding: 0.625rem;
+		/* Generous gutters so text never hugs the panel edges. */
+		padding: 0.875rem;
 		overflow-y: auto;
 		height: 100%;
 		display: flex;
@@ -233,7 +279,7 @@
 		color: color-mix(in srgb, var(--color-encre) 70%, transparent);
 		white-space: nowrap;
 		overflow: hidden;
-		text-overflow: clip;
+		text-overflow: ellipsis;
 	}
 
 	.side-sep {
@@ -266,7 +312,13 @@
 			background 0.1s ease;
 		white-space: nowrap;
 		overflow: hidden;
-		text-overflow: clip;
+		text-overflow: ellipsis;
+	}
+	/* Let the label shrink inside the flex Home row so the ellipsis can
+	   kick in there too (flex items refuse to shrink below content size
+	   by default). */
+	.side-item-text {
+		min-width: 0;
 	}
 	.side-item:hover {
 		background: color-mix(in srgb, var(--color-encre) 6%, transparent);
@@ -275,6 +327,19 @@
 	.side-item--active {
 		color: var(--color-encre);
 		font-weight: 600;
+	}
+
+	/* Home row — icon + label on one line (plain .side-item is block-only). */
+	.side-item--home {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+	.side-home-icon {
+		flex-shrink: 0;
+		/* Monochrome — the icon always follows the row's text color
+		   (muted normally, full ink on hover/active), no accent variant. */
+		color: inherit;
 	}
 
 	.side-empty {
@@ -305,6 +370,15 @@
 	.side-settings:hover {
 		background: color-mix(in srgb, var(--color-encre) 6%, transparent);
 		color: var(--color-encre);
+	}
+
+	/* Full-screen layout (≥ 1024px): tighten the text a notch — the wide
+	   sidebar has room, the small font keeps it chrome-like. Tablet/mobile
+	   keep the base 0.95em from .side-panel. */
+	@media (min-width: 1024px) {
+		.side-panel {
+			font-size: 0.9em;
+		}
 	}
 
 	/* Narrow (< 1024px): the panel becomes a drawer — width from --drawer-w

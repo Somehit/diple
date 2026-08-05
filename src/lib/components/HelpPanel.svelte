@@ -5,7 +5,7 @@
 	/**
 	 * Right-hand help panel, toggled by the "?" button in the navbar.
 	 * Reference only — it documents what exists, it doesn't change state.
-	 * Mirrors the left Sidebar's look and slide behaviour (fixed, 260px,
+	 * Mirrors the left Sidebar's look and slide behaviour (fixed, 280px,
 	 * blur, translateX(100%) → 0).
 	 */
 	let { open = false }: { open?: boolean } = $props();

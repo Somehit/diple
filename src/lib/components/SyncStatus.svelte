@@ -104,7 +104,7 @@
 		width: 12px;
 		height: 12px;
 		border-radius: 50%;
-		background: #2f9e44; /* healthy green — muted, fits the warm palette */
+		background: #2f9e44; /* healthy green — muted, fits the palette */
 		transition: background 0.2s ease;
 	}
 	.sync--amber .dot {

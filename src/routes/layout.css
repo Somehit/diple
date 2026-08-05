@@ -10,11 +10,18 @@
 	--font-serif: 'Noto Serif', Georgia, serif;
 
 	/* Palette (light is the default; the dark variant lives in @layer base,
-	   switched by data-theme / prefers-color-scheme) */
-	--color-fond: #faf9f6;
-	--color-encre: #1e1b16;
+	   switched by data-theme / prefers-color-scheme).
+	   Light = Evernote-neutral: pure white note paper, dark neutral gray
+	   ink (Evernote's #2D2D2D); everything else derives via color-mix —
+	   the accent stays Diple's orange. */
+	--color-fond: #ffffff;
+	--color-encre: #2d2d2d;
 	--color-accent: #e0862a;
 	--color-surface: color-mix(in srgb, var(--color-encre) 5%, var(--color-fond));
+	/* Left sidebar = Evernote's own gray, sampled at #F6F5F4 (a very light
+	   warm tint, rgb 246,245,244). Deliberately distinct from the white
+	   notes. */
+	--color-sidebar: #f6f5f4;
 	--color-erreur: #c33c2b;
 }
 
@@ -70,6 +77,9 @@
 		--color-encre: #e2e0dc;
 		--color-accent: #f0a04e;
 		--color-erreur: #e05a45;
+		/* Sidebar dark = Evernote's list gray, clearly lighter than our
+		   charcoal notes so the panel stays distinct. */
+		--color-sidebar: #242424;
 		/* Stronger on dark: 25% of the brightened accent reads as a warm
 		   amber band (the app's text ::selection sits at 30%). */
 		--color-hover: color-mix(in srgb, var(--color-accent) 25%, transparent);
@@ -80,6 +90,7 @@
 			--color-encre: #e2e0dc;
 			--color-accent: #f0a04e;
 			--color-erreur: #e05a45;
+			--color-sidebar: #242424;
 			--color-hover: color-mix(in srgb, var(--color-accent) 25%, transparent);
 		}
 	}
