@@ -37,11 +37,13 @@
 		--font-size: 1.125rem;
 		--font-body: var(--font-sans);
 
-		/* Accent hover highlight (palette selected row, text selection).
-		   Overridden per theme below: on a light background 14% accent is a
-		   clean pale orange band, but on near-black it collapses into an
+		/* Accent hover highlight (palette selected row). Overridden per
+		   theme below: on a light background 14% accent is a clean pale
+		   orange band, but on near-black it collapses into an
 		   almost-invisible dirty brown — the same % must go up as the
-		   background goes dark. */
+		   background goes dark.
+		   Selection (text ::selection, block band) is deliberately NOT
+		   accent — it's a neutral gray from the ink (see ::selection). */
 		--color-hover: color-mix(in srgb, var(--color-accent) 14%, transparent);
 
 		/* Pill height — the navbar layout derives from it (actions row
@@ -60,9 +62,37 @@
 		   cluster). Wide: same row as the pill. Narrow: second row below. */
 		--actions-row-top: 1rem;
 
-		/* Right help panel width — HelpPanel only (the navbar no longer
-		   computes offsets from it). One knob. */
-		--help-w: 300px;
+		/* Right help panel width — HelpPanel + the wide-screen content
+		   push (--panel-right). One knob. Wider than the left sidebar so
+		   shortcut/filter rows breathe. */
+		--help-w: 380px;
+		/* Left sidebar width — one knob shared by the panel itself
+		   (Sidebar.svelte) and the content push (--panel-left). */
+		--sidebar-w: 300px;
+		/* Content push from open panels (wide screens only, set via
+		   data-panels on <html> by +page.svelte). Zero by default —
+		   narrow screens keep drawers that overlay instead. */
+		--panel-left: 0px;
+		--panel-right: 0px;
+
+		/* Mobile formatting bar height — buttons + padding (FormatBar.svelte).
+		   The edited block's scroll-margin reads it (Block.svelte) so the row
+		   the user is typing in never hides behind the bar. */
+		--formatbar-h: 3.5rem;
+		/* Mobile formatting bar margin — same breathing room on every side.
+		   Used both for the width cap (100vw − 2×) and the bottom offset. */
+		--formatbar-m: 0.75rem;
+	}
+
+	/* Wide screens: open panels push the content — the navbar pill and the
+	   editor column recenter in the remaining space instead of sitting
+	   underneath the panels. data-panels is set by +page.svelte ("sidebar
+	   help") and absent on narrow, where drawers overlay by design. */
+	:root[data-panels~='sidebar'] {
+		--panel-left: var(--sidebar-w);
+	}
+	:root[data-panels~='help'] {
+		--panel-right: var(--help-w);
 	}
 
 	/*
@@ -81,7 +111,8 @@
 		   charcoal notes so the panel stays distinct. */
 		--color-sidebar: #242424;
 		/* Stronger on dark: 25% of the brightened accent reads as a warm
-		   amber band (the app's text ::selection sits at 30%). */
+		   amber band. Text selection is a neutral ink gray, not accent
+		   (see ::selection). */
 		--color-hover: color-mix(in srgb, var(--color-accent) 25%, transparent);
 	}
 	@media (prefers-color-scheme: dark) {
@@ -156,7 +187,11 @@
 		   hardcoded here. */
 	}
 
+	/* Neutral gray text highlight, mixed from the ink — the ink is dark
+	   on light, light on dark, so this single mix reads as gray in both
+	   themes. Selection is state, not function: the accent stays reserved
+	   for the caret, hover, and live indicators. */
 	::selection {
-		background: color-mix(in srgb, var(--color-accent) 30%, transparent);
+		background: color-mix(in srgb, var(--color-encre) 25%, transparent);
 	}
 }

@@ -1,4 +1,5 @@
 import type { Block } from '$lib/server/db/queries';
+import { toMarkdown } from './export';
 
 /**
  * Clipboard format for diple block subtrees.
@@ -23,11 +24,15 @@ import type { Block } from '$lib/server/db/queries';
 
 export const MIME_DIPLE = 'application/x-diple-blocks';
 
-/** A clipboard tree node — structure only, no ids, no timestamps. */
+/**
+ * A clipboard tree node — structure only, no ids. `created_at` is optional
+ * on purpose: clipboard copies don't carry it (v1), file exports do (v2).
+ */
 export interface PasteBlock {
 	content: string;
 	collapsed: number;
 	children: PasteBlock[];
+	created_at?: number;
 }
 
 export interface DipleData {
@@ -43,15 +48,19 @@ let internal: DipleData | null = null;
 /**
  * Nest flat `roots` (and their descendants via childrenMap) into PasteBlocks.
  * childrenMap is position-sorted, so sibling order survives the round-trip.
+ * `withTimes` carries created_at through — only the file-export path asks
+ * for it; clipboard copies stay timestamp-free (a paste is a fresh copy).
  */
 export function buildPasteTree(
 	roots: Block[],
-	childrenMap: Map<string | null, Block[]>
+	childrenMap: Map<string | null, Block[]>,
+	withTimes = false
 ): PasteBlock[] {
 	function toTree(blk: Block): PasteBlock {
 		return {
 			content: blk.content,
 			collapsed: blk.collapsed,
+			...(withTimes ? { created_at: blk.created_at } : {}),
 			children: (childrenMap.get(blk.id) ?? []).map(toTree)
 		};
 	}
@@ -61,21 +70,15 @@ export function buildPasteTree(
 /** Serialize a subtree into the two clipboard payloads. */
 export function serializeToDiple(roots: PasteBlock[]): DipleData {
 	const json = JSON.stringify({ v: 1, blocks: roots });
-	const text = roots.map((node) => toPlainText(node, 0)).join('\n');
+	const text = toMarkdown(roots);
 	return { json, text };
 }
 
-/** One markdown line per block: `- content`, indented 4 spaces per level. */
-function toPlainText(node: PasteBlock, depth: number): string {
-	const head = '    '.repeat(depth);
-	const lines = [head + '- ' + node.content];
-	for (const child of node.children) lines.push(toPlainText(child, depth + 1));
-	return lines.join('\n');
-}
-
 /**
- * Parse the JSON payload. Returns null when the payload isn't ours (wrong
- * shape or version) — callers then fall back to plain text / native paste.
+ * Parse the JSON payload. Accepts v1 (clipboard: no timestamps) and v2
+ * (file export: created_at carried, so `:today` survives a round-trip).
+ * Returns null when the payload isn't ours (wrong shape or version) —
+ * callers then fall back to plain text / native paste.
  */
 export function parseDipleJson(json: string): PasteBlock[] | null {
 	try {
@@ -83,19 +86,26 @@ export function parseDipleJson(json: string): PasteBlock[] | null {
 		if (typeof parsed !== 'object' || parsed === null) return null;
 		const blocks = (parsed as { blocks?: unknown }).blocks;
 		if (!Array.isArray(blocks)) return null;
-		if ((parsed as { v?: unknown }).v !== 1) return null;
-		return blocks.map(parseNode);
+		const v = (parsed as { v?: unknown }).v;
+		if (v !== 1 && v !== 2) return null;
+		return blocks.map((b) => parseNode(b, v === 2));
 	} catch {
 		return null;
 	}
 }
 
-function parseNode(raw: unknown): PasteBlock {
-	const node = (raw ?? {}) as { content?: unknown; collapsed?: unknown; children?: unknown };
+function parseNode(raw: unknown, withTimes: boolean): PasteBlock {
+	const node = (raw ?? {}) as {
+		content?: unknown;
+		collapsed?: unknown;
+		created_at?: unknown;
+		children?: unknown;
+	};
 	return {
 		content: typeof node.content === 'string' ? node.content : '',
 		collapsed: node.collapsed === 1 ? 1 : 0,
-		children: Array.isArray(node.children) ? node.children.map(parseNode) : []
+		...(withTimes && typeof node.created_at === 'number' ? { created_at: node.created_at } : {}),
+		children: Array.isArray(node.children) ? node.children.map((c) => parseNode(c, withTimes)) : []
 	};
 }
 
@@ -113,7 +123,7 @@ export function parsePlainText(text: string): PasteBlock[] {
 	const stack: PasteBlock[] = [];
 	for (const rawLine of text.split(/\r?\n/)) {
 		const { indent, content } = splitIndent(rawLine);
-		if (content === '') continue; // blank line → not a block
+		if (content.trim() === '') continue; // blank line → not a block
 		const node: PasteBlock = { content, collapsed: 0, children: [] };
 		while (stack.length > indent) stack.pop();
 		const parent = stack[indent - 1];

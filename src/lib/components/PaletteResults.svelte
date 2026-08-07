@@ -141,7 +141,7 @@
 		text-overflow: ellipsis;
 	}
 	.crumb:hover {
-		color: var(--color-accent);
+		color: var(--color-encre);
 		text-decoration: underline;
 	}
 	.crumb-sep {

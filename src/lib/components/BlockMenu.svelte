@@ -23,11 +23,13 @@
 		block,
 		onSaveContent,
 		onClipboardAction,
+		onExport,
 		onZoom
 	}: {
 		block: Block;
 		onSaveContent: (id: string, before: string, after: string, caret?: number) => void;
 		onClipboardAction?: (id: string, action: FormatAction) => void;
+		onExport?: () => void;
 		onZoom?: (id: string) => void;
 	} = $props();
 
@@ -39,9 +41,9 @@
 		if (!btnEl) return;
 		const rect = btnEl.getBoundingClientRect();
 		// Clamp like SelectionMenu: keep the dropdown inside the viewport.
-		// Estimate covers zoom + clipboard section + formats + delete (~400px).
-		const x = Math.min(rect.left, (visualViewport?.width ?? window.innerWidth) - 150);
-		const y = Math.min(rect.bottom + 4, (visualViewport?.height ?? window.innerHeight) - 400);
+		// Estimate covers zoom + clipboard + formats + export + delete (~460px).
+		const x = Math.min(rect.left, (visualViewport?.width ?? window.innerWidth) - 210);
+		const y = Math.min(rect.bottom + 4, (visualViewport?.height ?? window.innerHeight) - 460);
 		menuPos = { x, y };
 		open = true;
 	}
@@ -50,6 +52,10 @@
 		open = false;
 		if (action === 'zoom') {
 			onZoom?.(block.id);
+			return;
+		}
+		if (action === 'export') {
+			onExport?.();
 			return;
 		}
 		if (
@@ -107,7 +113,13 @@
 {#if open && menuPos}
 	<div class="menu-backdrop" role="presentation" onclick={() => (open = false)}></div>
 	<div class="menu-dropdown" style="left: {menuPos.x}px; top: {menuPos.y}px;">
-		<FormatMenuItems onApply={apply} showZoom={true} showClipboard={true} showDelete={true} />
+		<FormatMenuItems
+			onApply={apply}
+			showZoom={true}
+			showClipboard={true}
+			showExport={!!onExport}
+			showDelete={true}
+		/>
 	</div>
 {/if}
 
@@ -131,7 +143,7 @@
 		transition: opacity 0.15s ease;
 	}
 	.menu-btn:hover {
-		color: var(--color-accent);
+		color: var(--color-encre);
 	}
 	/* Reveal on row hover — .block-row lives in Block.svelte, hence :global */
 	:global(.block-row:hover) .menu-btn,
@@ -154,8 +166,8 @@
 		border: 1px solid color-mix(in srgb, var(--color-encre) 12%, transparent);
 		border-radius: 6px;
 		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-		min-width: 140px;
-		padding: 4px 0;
+		min-width: 200px;
+		padding: 6px 0;
 		max-height: calc(100vh - 16px);
 		overflow-y: auto;
 	}

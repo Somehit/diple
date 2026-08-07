@@ -17,6 +17,10 @@ export type ContentWidth = 'narrow' | 'medium' | 'wide';
 export type BlockCountMode = 'hidden' | 'descendants' | 'children';
 export type FontFamily = 'sans' | 'serif' | 'mono';
 export type Lang = 'en' | 'fr';
+/** What the sidebar lists: the current page as an indented outline
+ *  (default), the zoomed block's siblings, or the home view (root
+ *  blocks) regardless of zoom. */
+export type SidebarMode = 'siblings' | 'page' | 'home';
 
 export interface Settings {
 	theme: ThemePref;
@@ -25,6 +29,7 @@ export interface Settings {
 	blockCount: BlockCountMode;
 	font: FontFamily;
 	lang: Lang;
+	sidebarMode: SidebarMode;
 }
 
 const STORAGE_KEY = 'diple:settings:v1';
@@ -36,6 +41,7 @@ const CONTENT_WIDTHS: readonly ContentWidth[] = ['narrow', 'medium', 'wide'];
 const BLOCK_COUNTS: readonly BlockCountMode[] = ['hidden', 'descendants', 'children'];
 const FONTS: readonly FontFamily[] = ['sans', 'serif', 'mono'];
 const LANGS: readonly Lang[] = ['en', 'fr'];
+const SIDEBAR_MODES: readonly SidebarMode[] = ['siblings', 'page', 'home'];
 
 /** Medium = today's app: 1.125rem body text, 720px column, `› N` badge. */
 const DEFAULTS: Settings = {
@@ -44,7 +50,8 @@ const DEFAULTS: Settings = {
 	contentWidth: 'medium',
 	blockCount: 'descendants',
 	font: 'sans',
-	lang: 'en'
+	lang: 'en',
+	sidebarMode: 'page'
 };
 
 /** First run follows the browser — the picker in Preferences can override. */
@@ -62,10 +69,10 @@ function pick<T extends string>(value: unknown, allowed: readonly T[], fallback:
 function load(): Settings {
 	// SSR has no localStorage — defaults (with browser language detection
 	// deferred to the client, where navigator exists).
-	if (typeof window === 'undefined') return { ...DEFAULTS, lang: detectLang() };
+	if (typeof window === 'undefined') return factoryDefaults();
 	try {
 		const raw = window.localStorage.getItem(STORAGE_KEY);
-		if (!raw) return { ...DEFAULTS, lang: detectLang() };
+		if (!raw) return factoryDefaults();
 		const parsed = JSON.parse(raw) as Record<string, unknown>;
 		return {
 			theme: pick(parsed.theme, THEMES, DEFAULTS.theme),
@@ -73,11 +80,28 @@ function load(): Settings {
 			contentWidth: pick(parsed.contentWidth, CONTENT_WIDTHS, DEFAULTS.contentWidth),
 			blockCount: pick(parsed.blockCount, BLOCK_COUNTS, DEFAULTS.blockCount),
 			font: pick(parsed.font, FONTS, DEFAULTS.font),
-			lang: pick(parsed.lang, LANGS, detectLang())
+			lang: pick(parsed.lang, LANGS, detectLang()),
+			sidebarMode: pick(parsed.sidebarMode, SIDEBAR_MODES, DEFAULTS.sidebarMode)
 		};
 	} catch {
-		return { ...DEFAULTS, lang: detectLang() };
+		return factoryDefaults();
 	}
+}
+
+/** The first-run state: the hardcoded DEFAULTS, except lang which follows
+ *  the browser (same detection as load()). Single source of truth for both
+ *  the factory reset and the "Default" markers in the settings UI — what a
+ *  fresh browser shows IS what the reset restores. */
+export function factoryDefaults(): Settings {
+	return { ...DEFAULTS, lang: detectLang() };
+}
+
+/** Restore every preference to its first-run state and persist. Same
+ *  reactive mechanism as updateSettings (Object.assign on $state stays
+ *  reactive — each property is individually tracked). */
+export function resetSettings(): void {
+	Object.assign(settings, factoryDefaults());
+	persist();
 }
 
 /** The single reactive source — components read this, never localStorage. */

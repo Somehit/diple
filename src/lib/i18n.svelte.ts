@@ -24,6 +24,30 @@ const en: Record<string, string> = {
 	'settings.tabs.account': 'Account',
 	'settings.empty': 'Nothing here yet.',
 
+	// Import / Export
+	'settings.io.export': 'Export',
+	'settings.io.exportDesc':
+		'Your blocks, in an open format — leave whenever you want, nothing is locked in.',
+	'settings.io.scope': 'Scope',
+	'settings.io.scope.all': 'Whole tree',
+	'settings.io.scope.page': 'Current page',
+	'settings.io.scope.disabled': 'You are at the root — the current page is the whole tree.',
+	'settings.io.format': 'Format',
+	'settings.io.format.markdown': 'Markdown',
+	'settings.io.format.opml': 'OPML',
+	'settings.io.format.json': 'diple JSON',
+	'settings.io.download': 'Download export',
+	'settings.io.import': 'Import',
+	'settings.io.importDesc': 'Bring blocks in from Markdown, OPML or diple JSON files.',
+	'settings.io.file': 'Choose a file…',
+	'settings.io.blocks.one': 'block',
+	'settings.io.blocks.many': 'blocks',
+	'settings.io.destination': 'Destination',
+	'settings.io.destination.page': 'Into the current page',
+	'settings.io.destination.root': 'As a new root block',
+	'settings.io.importAction': 'Import blocks',
+	'settings.io.error': 'Could not read this file.',
+
 	// Language picker (endonyms — same in every language)
 	'lang.fr': 'Français',
 	'lang.en': 'English',
@@ -49,9 +73,24 @@ const en: Record<string, string> = {
 	'pref.width.medium': 'Medium',
 	'pref.width.wide': 'Wide',
 	'pref.blockCount.label': 'Block count',
+	'pref.blockCount.desc':
+		"The count shown on a collapsed block's bullet: how many blocks it hides.",
 	'pref.blockCount.hidden': 'Hidden',
 	'pref.blockCount.descendants': 'All blocks below',
 	'pref.blockCount.children': 'Direct children',
+	'pref.sidebar.label': 'Sidebar view',
+	'pref.sidebar.desc': 'What the left panel lists as you browse the tree.',
+	'pref.sidebar.siblings': 'Siblings',
+	'pref.sidebar.page': 'Page tree',
+	'pref.sidebar.home': 'Home',
+	'pref.default': 'Default',
+	'pref.reset.label': 'Reset',
+	'pref.reset.desc': 'Restore every preference to its initial value',
+	'pref.reset.action': 'Reset all settings',
+	'pref.reset.confirm.title': 'Reset all settings?',
+	'pref.reset.confirm.desc': 'Every preference returns to its initial value.',
+	'pref.reset.confirm.action': 'Reset all settings',
+	'pref.reset.cancel': 'Cancel',
 
 	// Shortcuts tab
 	'shortcuts.title': 'Shortcuts',
@@ -73,6 +112,7 @@ const en: Record<string, string> = {
 	'side.settings': 'Settings',
 	'side.noRoots': 'No root blocks yet',
 	'side.noSiblings': 'No siblings',
+	'side.noChildren': 'No children yet',
 
 	// Help panel
 	'help.title': 'Help',
@@ -123,7 +163,11 @@ const en: Record<string, string> = {
 	'menu.strike': 'Strikethrough',
 	'menu.code': 'Code',
 	'menu.delete': 'Delete',
+	'menu.export': 'Export',
 	'blockmenu.aria': 'Block options',
+
+	// Mobile formatting bar
+	'formatbar.aria': 'Formatting options',
 
 	// Editor toasts / drag image
 	'editor.errReverted': "Couldn't save — change reverted.",
@@ -170,6 +214,30 @@ const fr: Record<string, string> = {
 	'settings.tabs.account': 'Compte',
 	'settings.empty': 'Rien pour l’instant.',
 
+	// Importer / Exporter
+	'settings.io.export': 'Exporter',
+	'settings.io.exportDesc':
+		'Vos blocs dans un format ouvert — partez quand vous voulez, rien n’est verrouillé.',
+	'settings.io.scope': 'Portée',
+	'settings.io.scope.all': 'Tout l’arbre',
+	'settings.io.scope.page': 'Page courante',
+	'settings.io.scope.disabled': 'Vous êtes à la racine — la page courante, c’est tout l’arbre.',
+	'settings.io.format': 'Format',
+	'settings.io.format.markdown': 'Markdown',
+	'settings.io.format.opml': 'OPML',
+	'settings.io.format.json': 'JSON diple',
+	'settings.io.download': 'Télécharger l’export',
+	'settings.io.import': 'Importer',
+	'settings.io.importDesc': 'Importez des blocs depuis des fichiers Markdown, OPML ou JSON diple.',
+	'settings.io.file': 'Choisir un fichier…',
+	'settings.io.blocks.one': 'bloc',
+	'settings.io.blocks.many': 'blocs',
+	'settings.io.destination': 'Destination',
+	'settings.io.destination.page': 'Dans la page courante',
+	'settings.io.destination.root': 'Comme nouvelle racine',
+	'settings.io.importAction': 'Importer les blocs',
+	'settings.io.error': 'Impossible de lire ce fichier.',
+
 	'lang.fr': 'Français',
 	'lang.en': 'English',
 
@@ -193,9 +261,25 @@ const fr: Record<string, string> = {
 	'pref.width.medium': 'Moyenne',
 	'pref.width.wide': 'Large',
 	'pref.blockCount.label': 'Nombre de blocs',
+	'pref.blockCount.desc':
+		'Le nombre affiché sur la puce d’un bloc replié : combien de blocs il masque.',
 	'pref.blockCount.hidden': 'Masquer',
 	'pref.blockCount.descendants': 'Tous les blocs en dessous',
 	'pref.blockCount.children': 'Enfants directs',
+	'pref.sidebar.label': 'Vue du panneau latéral',
+	'pref.sidebar.desc':
+		'Ce que le panneau de gauche affiche pendant que vous naviguez dans l’arbre.',
+	'pref.sidebar.siblings': 'Frères',
+	'pref.sidebar.page': 'Arborescence de la page',
+	'pref.sidebar.home': 'Accueil',
+	'pref.default': 'Par défaut',
+	'pref.reset.label': 'Réinitialisation',
+	'pref.reset.desc': 'Rétablir toutes les préférences à leur valeur initiale',
+	'pref.reset.action': 'Réinitialiser tous les réglages',
+	'pref.reset.confirm.title': 'Réinitialiser tous les réglages ?',
+	'pref.reset.confirm.desc': 'Chaque préférence revient à sa valeur initiale.',
+	'pref.reset.confirm.action': 'Réinitialiser tous les réglages',
+	'pref.reset.cancel': 'Annuler',
 
 	'shortcuts.title': 'Raccourcis',
 	'shortcuts.contextual': 'Touches contextuelles',
@@ -214,6 +298,7 @@ const fr: Record<string, string> = {
 	'side.settings': 'Paramètres',
 	'side.noRoots': 'Aucun bloc racine pour l’instant',
 	'side.noSiblings': 'Aucun frère',
+	'side.noChildren': 'Aucun enfant pour l’instant',
 
 	'help.title': 'Aide',
 	'help.aria': 'Aide',
@@ -261,7 +346,11 @@ const fr: Record<string, string> = {
 	'menu.strike': 'Barré',
 	'menu.code': 'Code',
 	'menu.delete': 'Supprimer',
+	'menu.export': 'Exporter',
 	'blockmenu.aria': 'Options du bloc',
+
+	// Barre de formatage mobile
+	'formatbar.aria': 'Options de formatage',
 
 	'editor.errReverted': 'Impossible d’enregistrer — modification annulée.',
 	'editor.errKept':

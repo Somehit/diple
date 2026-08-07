@@ -26,6 +26,7 @@
 	import BlockRecursive from './Block.svelte';
 	import BlockMenu from './BlockMenu.svelte';
 	import type { FormatAction } from './FormatMenuItems.svelte';
+	import { formatBar } from '$lib/formatbar.svelte';
 
 	let {
 		block,
@@ -37,6 +38,7 @@
 		onToggleCollapse,
 		onZoom,
 		onClipboardAction,
+		onExport,
 		onDragStart,
 		isDragging = false
 	}: {
@@ -49,6 +51,7 @@
 		onToggleCollapse?: (id: string) => void;
 		onZoom?: (id: string) => void;
 		onClipboardAction?: (id: string, action: FormatAction) => void;
+		onExport?: () => void;
 		onDragStart?: (id: string, e: DragEvent) => void;
 		isDragging?: boolean;
 	} = $props();
@@ -115,18 +118,25 @@
 	$effect(() => {
 		if (editEl) {
 			registerEl(block.id, editEl);
+			// Unmount safety: a deleted/removed block never fires blur, so
+			// clear the bar's session if we are the active one (guard below).
+			return () => {
+				if (formatBar.el === editEl) formatBar.el = null;
+			};
 		}
 	});
 
 	// Set textContent and place caret when transitioning INTO edit mode.
 	// pendingCaret is consumed once here: null = end, number = specific offset.
 	// block.content is deliberately NOT read here to avoid re-firing on every keystroke.
+	// formatBar.el announces this block's element to the mobile formatting bar.
 	$effect(() => {
 		if (editing && editEl) {
 			editEl.textContent = capturedContent;
 			const caret = pendingCaret;
 			pendingCaret = null;
 			requestAnimationFrame(() => placeCaret(editEl!, caret));
+			formatBar.el = editEl;
 		}
 	});
 
@@ -201,6 +211,9 @@
 			}
 		}
 		editing = false;
+		// The edit session is over — hide the bar. Guarded: a blur fired for
+		// THIS block only; a newer session must survive (see formatbar.svelte.ts).
+		if (formatBar.el === editEl) formatBar.el = null;
 	}
 
 	function handleInput() {
@@ -263,7 +276,7 @@
 				<!-- Formatting mid-edit would fight the capturedContent flow — spacer keeps alignment -->
 				<span class="menu-spacer" aria-hidden="true"></span>
 			{:else}
-				<BlockMenu {block} {onSaveContent} {onClipboardAction} {onZoom} />
+				<BlockMenu {block} {onSaveContent} {onClipboardAction} {onExport} {onZoom} />
 			{/if}
 			{#if children.length > 0}
 				<button
@@ -516,6 +529,12 @@
 		:global(.menu-btn) {
 			display: none;
 		}
+		.block-content--edit {
+			/* When the browser scrolls the edited block into view (keyboard
+			   open), keep it above the formatting bar — the keyboard offset
+			   alone leaves it peeking behind the bar. */
+			scroll-margin-bottom: var(--formatbar-h);
+		}
 	}
 	/* Touch only: stop native text selection / the iOS callout during
 	   long-press; edit mode (contenteditable) is unaffected. A narrow
@@ -547,7 +566,7 @@
 		font-size: 0.9em;
 	}
 	.block-content--view :global(a) {
-		color: color-mix(in srgb, var(--color-accent) 70%, var(--color-encre));
+		color: var(--color-encre);
 		text-decoration: underline;
 	}
 	.block-content--view :global(mark) {

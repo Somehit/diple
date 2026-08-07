@@ -5,8 +5,8 @@
 	/**
 	 * Right-hand help panel, toggled by the "?" button in the navbar.
 	 * Reference only — it documents what exists, it doesn't change state.
-	 * Mirrors the left Sidebar's look and slide behaviour (fixed, 280px,
-	 * blur, translateX(100%) → 0).
+	 * Mirrors the left Sidebar's look and slide behaviour (fixed, same
+	 * gray, translateX(100%) → 0).
 	 */
 	let { open = false }: { open?: boolean } = $props();
 
@@ -68,9 +68,10 @@
 		height: 100dvh;
 		z-index: 55;
 		width: var(--help-w);
-		background: color-mix(in srgb, var(--color-fond) 92%, transparent);
-		backdrop-filter: blur(12px);
-		-webkit-backdrop-filter: blur(12px);
+		/* Same gray as the left sidebar (--color-sidebar) — both panels
+		   are chrome, one tone apart from the white note area. Opaque, so
+		   no backdrop blur is needed. */
+		background: var(--color-sidebar);
 		border-left: 1px solid color-mix(in srgb, var(--color-encre) 8%, transparent);
 		overflow: hidden;
 		transform: translateX(100%);

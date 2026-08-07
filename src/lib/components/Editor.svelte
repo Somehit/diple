@@ -43,11 +43,16 @@
 	import { syncBegin, syncCommit, syncFail } from '$lib/sync.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import { computeDropTarget, type DropTarget, type DropCtx } from '$lib/drop-target';
+	import type { ImportDestination } from '$lib/import';
 
 	let {
 		blocks: initialBlocks,
 		intro,
 		onWorkIntent,
+		onExport,
+		importRoots = $bindable<(roots: PasteBlock[], destination: ImportDestination) => void>(
+			() => {}
+		),
 		collapseAll = $bindable<() => void>(() => {}),
 		revealAll = $bindable<() => void>(() => {}),
 		allCollapsed = $bindable(false)
@@ -55,6 +60,8 @@
 		blocks: Block[];
 		intro?: boolean;
 		onWorkIntent?: () => void;
+		onExport?: () => void;
+		importRoots?: (roots: PasteBlock[], destination: ImportDestination) => void;
 		collapseAll?: () => void;
 		revealAll?: () => void;
 		allCollapsed?: boolean;
@@ -404,6 +411,7 @@
 		collapseAll = handleCollapseAll;
 		revealAll = handleRevealAll;
 		allCollapsed = isAllCollapsed;
+		importRoots = handleImport;
 	});
 
 	function getSiblings(parentId: string | null): Block[] {
@@ -1837,7 +1845,8 @@
 					content: node.content,
 					position: basePos + i,
 					collapsed: node.collapsed,
-					created_at: Date.now()
+					// File imports (v2 JSON) carry created_at; clipboard pastes don't.
+					created_at: node.created_at ?? Date.now()
 				};
 				created.push(blk);
 				walk(node.children, blk.id, 0);
@@ -1862,6 +1871,19 @@
 			{ id: created[0].id, offset: 0 },
 			{ id: created[0].id, offset: 0 }
 		);
+	}
+
+	/**
+	 * File import (settings modal → page → here). Reuses the paste
+	 * machinery: one transaction, one undo entry, rollback + toast on
+	 * failure. 'page' appends the imported blocks as children of the
+	 * current view's root (the zoom block, or a root block at the top
+	 * view); 'root' appends them as new root blocks of the whole tree.
+	 */
+	function handleImport(roots: PasteBlock[], destination: ImportDestination) {
+		const parentId = destination === 'root' ? null : effectiveZoomId;
+		const siblings = childrenMap.get(parentId) ?? [];
+		pasteRoots(parentId, siblings.length, roots);
 	}
 
 	/**
@@ -2314,6 +2336,7 @@
 						onToggleCollapse={handleToggleCollapse}
 						onZoom={handleZoom}
 						onClipboardAction={handleBlockClipboardAction}
+						{onExport}
 						onDragStart={handleDragStart}
 						isDragging={dragRoots.includes(block.id)}
 					/>
@@ -2329,6 +2352,7 @@
 							onToggleCollapse={handleToggleCollapse}
 							onZoom={handleZoom}
 							onClipboardAction={handleBlockClipboardAction}
+							{onExport}
 							onDragStart={handleDragStart}
 							isDragging={dragRoots.includes(block.id)}
 						/>
@@ -2392,17 +2416,26 @@
 		margin: 2rem auto;
 		padding: 0;
 		position: relative;
+		/* The diple bullets hang half a bullet-width into the left margin
+		   (Block.svelte's negative gutter margin). Expose --bullet-w here so
+		   the selection overlay below can start at their left edge instead
+		   of cutting every bullet in half. */
+		--bullet-w: 1.5rem;
 		/* Touch: keep pan/pinch-zoom, disable the browser's double-tap zoom and
 		   the legacy 300ms tap delay — our own double-tap (zoom) owns the gesture. */
 		touch-action: manipulation;
 	}
 	/* Single continuous band behind the selected blocks.
-	   First child of .editor → blocks paint above it, no z-index needed. */
+	   First child of .editor → blocks paint above it, no z-index needed.
+	   Neutral gray from the ink, matching ::selection (not accent).
+	   left: -bullet-w/2 — the diple bullets hang half a bullet-width into
+	   the left margin (Block.svelte), so left: 0 would start the band at
+	   their center and cut every bullet in half. */
 	.selection-overlay {
 		position: absolute;
-		left: 0;
+		left: calc(-1 * var(--bullet-w) / 2);
 		right: 0;
-		background: color-mix(in srgb, var(--color-accent) 15%, var(--color-fond));
+		background: color-mix(in srgb, var(--color-encre) 12%, var(--color-fond));
 		pointer-events: none;
 	}
 	/* Disable native text selection while drag-selecting blocks (applied after ~4px threshold) */

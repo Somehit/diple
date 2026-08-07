@@ -14,16 +14,24 @@
 		| 'copy'
 		| 'cut'
 		| 'paste'
+		| 'export'
 		| 'delete';
 
 	type Props = {
 		onApply: (action: FormatAction) => void;
 		showClipboard?: boolean;
 		showDelete?: boolean;
+		showExport?: boolean;
 		showZoom?: boolean;
 	};
 
-	let { onApply, showClipboard = true, showDelete = false, showZoom = false }: Props = $props();
+	let {
+		onApply,
+		showClipboard = true,
+		showDelete = false,
+		showExport = false,
+		showZoom = false
+	}: Props = $props();
 </script>
 
 {#if showZoom}
@@ -45,6 +53,10 @@
 <button class="menu-item" onclick={() => onApply('highlight')}>{t('menu.highlight')}</button>
 <button class="menu-item" onclick={() => onApply('strike')}>{t('menu.strike')}</button>
 <button class="menu-item" onclick={() => onApply('code')}>{t('menu.code')}</button>
+{#if showExport}
+	<hr class="menu-divider" />
+	<button class="menu-item" onclick={() => onApply('export')}>{t('menu.export')}</button>
+{/if}
 {#if showDelete}
 	<hr class="menu-divider" />
 	<button class="menu-item menu-item--danger" onclick={() => onApply('delete')}>
@@ -60,7 +72,7 @@
 		background: none;
 		font: inherit;
 		font-size: 0.85em;
-		padding: 4px 12px;
+		padding: 6px 16px;
 		text-align: left;
 		cursor: pointer;
 		color: var(--color-encre);
@@ -78,7 +90,7 @@
 
 	.menu-divider {
 		border: none;
-		border-top: 1px solid color-mix(in srgb, var(--color-encre) 8%, transparent);
-		margin: 2px 0;
+		border-top: 1px solid color-mix(in srgb, var(--color-encre) 10%, transparent);
+		margin: 3px 0;
 	}
 </style>

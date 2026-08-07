@@ -125,7 +125,17 @@
 		/* Don't block clicks on elements below (breadcrumb) — only the pill
 		   inside is interactive, the decorative padding/mask area is passive. */
 		pointer-events: none;
-		padding: 0.875rem 1rem 4.5rem;
+		/* Panel push (wide screens): the offsets recenter the pill with the
+		   editor column between the open panels (0 on narrow). Longhands,
+		   NOT the padding shorthand: a shorthand mixing calc() + var() is
+		   silently dropped by WebKit/Safari at computed-value time (all
+		   padding → 0), while each longhand resolves independently.
+		   Transitions with the panels' slide. */
+		padding-top: 0.875rem;
+		padding-right: calc(1rem + var(--panel-right, 0px));
+		padding-bottom: 4.5rem;
+		padding-left: calc(1rem + var(--panel-left, 0px));
+		transition: padding 0.2s ease;
 		/*
 		 * Soft blur band, long fade. The mask's opaque zone (55% of ~146px ≈
 		 * 80px) ends just below the pill (74px), then ~66px of gradual fade —

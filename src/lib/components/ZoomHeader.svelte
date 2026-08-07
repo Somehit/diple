@@ -3,6 +3,7 @@
 	import { renderMarkdown } from '$lib/utils/markdown';
 	import { caretFromClick } from '$lib/utils/caret';
 	import { t } from '$lib/i18n.svelte';
+	import { formatBar } from '$lib/formatbar.svelte';
 
 	let {
 		block,
@@ -44,6 +45,8 @@
 			onSaveContent(block.id, capturedContent, newContent);
 		}
 		editing = false;
+		// Hide the formatting bar — same guarded clear as Block.svelte.
+		if (formatBar.el === editEl) formatBar.el = null;
 	}
 
 	function handleEditKeydown(e: KeyboardEvent) {
@@ -56,12 +59,14 @@
 
 	// Seed the contenteditable and place caret when entering edit mode.
 	// pendingCaret (from the click position, null = end) is consumed once here.
+	// formatBar.el announces this element to the mobile formatting bar.
 	$effect(() => {
 		if (editing && editEl) {
 			editEl.textContent = capturedContent;
 			const caret = pendingCaret;
 			pendingCaret = null;
 			editEl.focus();
+			formatBar.el = editEl;
 			const sel = window.getSelection();
 			if (sel && editEl.firstChild) {
 				const len = editEl.firstChild.textContent?.length ?? 0;
@@ -242,7 +247,7 @@
 		font-size: 0.9em;
 	}
 	.zoom-title :global(a) {
-		color: color-mix(in srgb, var(--color-accent) 70%, var(--color-encre));
+		color: var(--color-encre);
 		text-decoration: underline;
 	}
 	.hidden {

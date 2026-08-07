@@ -68,6 +68,55 @@ export function toggleCode(content: string): string {
 	return wrapPair(content, '`');
 }
 
+/**
+ * Selection-aware pair-marker toggle for the mobile formatting bar.
+ *
+ * Wraps (or unwraps) the substring [start, end) of `text` with `marker`
+ * and reports the new selection — callers restore it in the editor so the
+ * user keeps typing where they were. Collapsed selection (start === end):
+ * inserts the marker pair at the caret, selection between the markers.
+ *
+ * Unlike wrapPair (whole-block toggle), there is no italic/bold pre-strip:
+ * the action is scoped to the selected text, and stripping another marker
+ * pair from a partial selection would be surprising.
+ */
+export function wrapRange(
+	text: string,
+	start: number,
+	end: number,
+	marker: string
+): { text: string; selStart: number; selEnd: number } {
+	const s = Math.min(start, end);
+	const e = Math.max(start, end);
+	const clampedE = Math.min(e, text.length);
+	if (s >= clampedE) {
+		const at = Math.min(s, text.length);
+		const caret = at + marker.length;
+		return {
+			text: text.slice(0, at) + marker + marker + text.slice(at),
+			selStart: caret,
+			selEnd: caret
+		};
+	}
+	const selected = text.slice(s, clampedE);
+	const isWrapped =
+		selected.startsWith(marker) &&
+		selected.endsWith(marker) &&
+		selected.length >= marker.length * 2;
+	if (isWrapped) {
+		return {
+			text: text.slice(0, s) + selected.slice(marker.length, -marker.length) + text.slice(clampedE),
+			selStart: s,
+			selEnd: clampedE - marker.length * 2
+		};
+	}
+	return {
+		text: text.slice(0, s) + marker + selected + marker + text.slice(clampedE),
+		selStart: s + marker.length,
+		selEnd: clampedE + marker.length
+	};
+}
+
 // --- Multi-block helpers ---
 // Used when applying formatting to a selection of several blocks.
 // Semantics: if ALL blocks already have the formatting → remove it from all.
